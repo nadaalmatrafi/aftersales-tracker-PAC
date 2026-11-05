@@ -23,7 +23,7 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 });
 
-export const roleEnum = pgEnum("bp_role", ["system_owner", "ceo", "director", "manager", "employee"]);
+export const roleEnum = pgEnum("bp_role", ["system_owner", "ceo", "company_manager", "director", "manager", "employee"]);
 export const priorityEnum = pgEnum("bp_priority", ["low", "medium", "high", "critical"]);
 // "overdue" is never stored; it is derived from target_date.
 export const actionStatusEnum = pgEnum("bp_action_status", [
@@ -76,6 +76,7 @@ export const users = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
     email: text("email").notNull(),
+    username: text("username"),
     title: text("title"),
     role: roleEnum("role").notNull().default("employee"),
     departmentId: integer("department_id").references(() => departments.id),
@@ -92,7 +93,25 @@ export const users = pgTable(
   (t) => [
     uniqueIndex("users_email_uq").on(sql`lower(${t.email})`),
     uniqueIndex("users_external_id_uq").on(t.externalId),
+    uniqueIndex("users_username_uq").on(sql`lower(${t.username})`),
   ],
+);
+
+/** Leave periods: while active, the delegate receives the user's steps, approvals and notifications. */
+export const leavePeriods = pgTable(
+  "leave_periods",
+  {
+    id: serial("id").primaryKey(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    delegateId: uuid("delegate_id").notNull().references(() => users.id),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    note: text("note"),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    cancelledAt: ts("cancelled_at"),
+  },
+  (t) => [index("leave_user_idx").on(t.userId, t.startDate), check("leave_dates_ck", sql`${t.endDate} >= ${t.startDate}`)],
 );
 
 export const userOrganizations = pgTable(

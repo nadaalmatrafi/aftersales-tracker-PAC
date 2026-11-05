@@ -2,7 +2,7 @@ import "server-only";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import type { CurrentUser } from "./auth";
-import { actionVisibility, meetingVisibility } from "./access";
+import { actionVisibility } from "./access";
 import { listActions, type ActionFilters, type ActionRow } from "./queries";
 import { statusBreakdown } from "./dashboard";
 import { objectiveVisibility } from "./objectives";
@@ -11,7 +11,6 @@ import { fmtDate, fmtDateTime } from "./dates";
 
 export const REPORTS = {
   executive: { title: "Executive Action Plan Report", desc: "Every action plan with owner, current position, progress and impact." },
-  meeting: { title: "Weekly Meeting Follow-Up Report", desc: "Decisions, new actions, carried-forward and completed items for a meeting." },
   overdue: { title: "Overdue Action Report", desc: "Open actions past their target date." },
   department: { title: "Department Performance Report", desc: "Completion and overdue figures by department." },
   director: { title: "Director Accountability Report", desc: "Ownership, completion and open work by responsible person." },
@@ -19,7 +18,7 @@ export const REPORTS = {
   objectives: { title: "30/60/90-Day Objectives Report", desc: "Deliverables, responsibility, evidence and approval." },
   impact: { title: "Business Impact Report", desc: "Expected versus confirmed financial and operational impact." },
   completed: { title: "Completed Initiatives Report", desc: "Approved completions with dates and approvers." },
-  decisions: { title: "Pending Management Decisions Report", desc: "Approvals, escalations and meeting decisions awaiting management." },
+  decisions: { title: "Pending Management Decisions Report", desc: "Approvals and escalations awaiting management." },
 } as const;
 export type ReportType = keyof typeof REPORTS;
 
@@ -71,7 +70,7 @@ function filterLabel(f: ActionFilters) {
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
-export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFilters, opts: { meetingId?: string } = {}): Promise<Report> {
+export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFilters): Promise<Report> {
   const meta = REPORTS[type];
   const subtitle = `Generated ${fmtDateTime(new Date())} by ${u.name}${filterLabel(f)}`;
   const base = { title: meta.title, subtitle };
@@ -188,42 +187,13 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
         UNION ALL
         SELECT 'Escalation', a.code, a.point_task, o.name, a.escalated_at, COALESCE(a.escalation_note, '')
           FROM action_plans a JOIN users o ON o.id = a.owner_id WHERE a.is_escalated AND a.status NOT IN ('completed','cancelled') AND ${vis}
-        UNION ALL
-        SELECT 'Meeting decision requiring approval', to_char(m.meeting_at AT TIME ZONE 'Asia/Riyadh', 'DD Mon YYYY'), d.decision, cu.name, d.created_at, m.title
-          FROM meeting_decisions d JOIN meetings m ON m.id = d.meeting_id LEFT JOIN users cu ON cu.id = d.created_by
-         WHERE d.requires_approval AND d.action_id IS NULL AND ${meetingVisibility(u)}
+
         ORDER BY since`);
       return {
         ...base,
         columns: [{ key: "kind", label: "Decision type", width: 26 }, { key: "ref", label: "Reference", width: 14 }, { key: "item", label: "Item", width: 50 }, { key: "raised", label: "Raised by", width: 18 }, { key: "since", label: "Waiting since", width: 16 }, { key: "note", label: "Notes", width: 40 }],
         rows: (r.rows as Record<string, unknown>[]).map((x) => ({ kind: String(x.kind), ref: String(x.ref), item: String(x.item), raised: String(x.raised_by ?? ""), since: fmtDate(x.since as string), note: String(x.note) })),
       };
-    }
-    case "meeting": {
-      if (!opts.meetingId) return { ...base, subtitle: "Select a meeting to generate this report.", columns: [], rows: [] };
-      const m = (await db.execute(sql`SELECT m.id, m.title, m.meeting_at,
-                 COALESCE((SELECT array_agg(o.code) FROM meeting_organizations mo JOIN organizations o ON o.id = mo.organization_id WHERE mo.meeting_id = m.id), '{}') AS orgs
-               FROM meetings m WHERE m.id = ${opts.meetingId} AND ${meetingVisibility(u)}`)).rows[0] as { id: string; title: string; meeting_at: string; orgs: string[] } | undefined;
-      if (!m) return { ...base, subtitle: "Meeting not found.", columns: [], rows: [] };
-      const at = new Date(m.meeting_at).getTime();
-      const prev = (await db.execute(sql`SELECT max(meeting_at) AS p FROM meetings WHERE meeting_at < ${m.meeting_at}::timestamptz AND status <> 'cancelled' AND id <> ${m.id}`)).rows[0] as { p: string | null };
-      const prevAt = prev.p ? new Date(prev.p).getTime() : 0;
-      const all = (await listActions(u, {})).filter((a) => a.org_codes.some((c) => m.orgs.includes(c)));
-      const fromMeeting = new Set((await listActions(u, { meeting: m.id })).map((a) => a.id));
-      const open = (a: ActionRow) => a.status !== "completed" && a.status !== "cancelled";
-      const out: Record<string, string | number>[] = [];
-      for (const a of all) {
-        let section: string | null = null;
-        if (fromMeeting.has(a.id)) section = "New from this meeting";
-        else if (a.status === "completed" && a.completed_at && new Date(a.completed_at).getTime() > prevAt && new Date(a.completed_at).getTime() <= Math.min(Date.now(), at)) section = "Completed since last meeting";
-        else if (open(a) && new Date(a.created_at).getTime() < at) section = a.effective_status === "overdue" ? "Carried forward – overdue" : a.is_escalated ? "Carried forward – escalated" : a.status === "pending_approval" ? "Carried forward – pending approval" : "Carried forward";
-        if (section) out.push({ section, ...actionRow(a) });
-      }
-      const rank = ["New from this meeting", "Carried forward – escalated", "Carried forward – overdue", "Carried forward – pending approval", "Carried forward", "Completed since last meeting"];
-      out.sort((a, b) => rank.indexOf(String(a.section)) - rank.indexOf(String(b.section)));
-      const decisions = (await db.execute(sql`SELECT decision FROM meeting_decisions WHERE meeting_id = ${m.id} ORDER BY created_at`)).rows as { decision: string }[];
-      for (const d of decisions) out.unshift({ section: "Decision", code: "", org: "", department: "", responsible: "", task: d.decision, status: "", deadline: "", progress: "", with: "", latest: "", impact: "" });
-      return { title: `${meta.title} — ${m.title}`, subtitle: `${fmtDateTime(m.meeting_at)} · ${m.orgs.join(", ")} · ${subtitle}`, columns: [{ key: "section", label: "Section", width: 22 }, ...ACTION_COLS], rows: out };
     }
   }
 }
@@ -270,5 +240,88 @@ export async function toPdf(r: Report): Promise<Buffer> {
       doc.setFontSize(7).setTextColor(140).text(`Page ${doc.getNumberOfPages()} · Confidential — internal management use`, 36, doc.internal.pageSize.getHeight() - 16);
     },
   });
+  return Buffer.from(doc.output("arraybuffer"));
+}
+
+/** One-page CEO summary: headline figures, items needing attention and current bottlenecks (A4 landscape). */
+export async function ceoSummaryPdf(u: CurrentUser, f: ActionFilters, filterText: string): Promise<Buffer> {
+  const { kpis, holders } = await import("./dashboard");
+  const rows = await listActions(u, f);
+  const orgs = (await db.execute(sql`SELECT code FROM organizations WHERE is_active ORDER BY id`)).rows as { code: string }[];
+  const k = kpis(rows, orgs);
+  const open = rows.filter((a) => a.status !== "completed" && a.status !== "cancelled");
+  const attention = open
+    .filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical" || a.status === "pending_approval")
+    .slice(0, 12);
+  const people = holders(rows).slice(0, 8);
+
+  const { jsPDF } = await import("jspdf");
+  const { autoTable } = await import("jspdf-autotable");
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const W = doc.internal.pageSize.getWidth();
+  const RED: [number, number, number] = [206, 16, 44];
+  const BLACK: [number, number, number] = [23, 22, 20];
+  const ORANGE: [number, number, number] = [251, 134, 6];
+  doc.setFillColor(...RED).rect(0, 0, W, 6, "F");
+  doc.setFont("helvetica", "bold").setFontSize(16).setTextColor(...BLACK).text("Business Performance — CEO Summary", 36, 40);
+  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(110).text(`Petromin Auto Care · PAC | PCVC | DEX · ${fmtDateTime(new Date())} · ${u.name}${filterText}`, 36, 54);
+
+  const tiles: [string, string, [number, number, number]][] = [
+    ["Total", String(k.total), BLACK],
+    ["Active", String(k.active), BLACK],
+    ["Completed", String(k.completed), [21, 128, 61]],
+    ["Overdue", String(k.overdue), RED],
+    ["Pending approval", String(k.pendingApproval), ORANGE],
+    ["Critical / escalated", String(k.critical), RED],
+    ["Completion rate", k.completionRate == null ? "—" : `${k.completionRate}%`, BLACK],
+    ["No update 7+ days", String(k.stale), BLACK],
+  ];
+  const tw = (W - 72 - 7 * 8) / 8;
+  tiles.forEach(([label, value, color], i) => {
+    const x = 36 + i * (tw + 8);
+    doc.setDrawColor(228, 227, 225).setFillColor(255, 255, 255).roundedRect(x, 68, tw, 48, 4, 4, "FD");
+    doc.setFontSize(7).setTextColor(110).text(label.toUpperCase(), x + 8, 82);
+    doc.setFont("helvetica", "bold").setFontSize(16).setTextColor(...color).text(value, x + 8, 106);
+    doc.setFont("helvetica", "normal");
+  });
+
+  doc.setFont("helvetica", "bold").setFontSize(10).setTextColor(...BLACK).text("Requires attention — where each item stands", 36, 140);
+  autoTable(doc, {
+    startY: 146,
+    margin: { left: 36, right: 36 },
+    head: [["ID", "Point / Task", "Responsible", "Currently with", "Target", "Status", "%"]],
+    body: attention.length
+      ? attention.map((a) => [
+          a.code,
+          a.point_task.length > 110 ? `${a.point_task.slice(0, 107)}…` : a.point_task,
+          a.owner_name,
+          `${a.waiting_on_name ?? ""}${a.acting_for ? ` (for ${a.acting_for})` : ""}${a.waiting_on_step ? ` — ${a.waiting_on_step}` : ""}`,
+          a.target_date ? fmtDate(a.target_date) : (a.timeline_note ?? "—"),
+          STATUS_LABEL[a.effective_status],
+          String(a.progress),
+        ])
+      : [[{ content: "Nothing overdue, blocked, escalated or awaiting approval.", colSpan: 7 }]],
+    styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak", valign: "top" },
+    headStyles: { fillColor: BLACK, textColor: 255 },
+    columnStyles: { 0: { cellWidth: 48 }, 1: { cellWidth: 300 }, 2: { cellWidth: 80 }, 3: { cellWidth: 170 }, 4: { cellWidth: 70 }, 5: { cellWidth: 66 }, 6: { cellWidth: 30, halign: "right" } },
+    didParseCell: (d) => {
+      if (d.section === "body" && d.column.index === 5 && d.cell.raw === "Overdue") d.cell.styles.textColor = RED;
+    },
+  });
+  const y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 18;
+  doc.setFont("helvetica", "bold").setFontSize(10).setTextColor(...BLACK).text("Who is holding open work", 36, y);
+  autoTable(doc, {
+    startY: y + 6,
+    margin: { left: 36, right: W / 2 },
+    head: [["Person", "Open", "Overdue", "Blocked"]],
+    body: people.length ? people.map((p) => [`${p.name}${p.actingFor ? ` (covering for ${p.actingFor})` : ""}`, String(p.open), String(p.overdue), String(p.blocked)]) : [["No open actions", "", "", ""]],
+    styles: { fontSize: 7.5, cellPadding: 3 },
+    headStyles: { fillColor: BLACK, textColor: 255 },
+    columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" } },
+  });
+  const byOrg = k.byOrg.map((o) => `${o.code} ${o.n}`).join("   ·   ");
+  doc.setFont("helvetica", "bold").setFontSize(10).setTextColor(...BLACK).text("By company", W / 2 + 18, y);
+  doc.setFont("helvetica", "normal").setFontSize(9).setTextColor(60).text(byOrg || "—", W / 2 + 18, y + 18);
+  doc.setFontSize(7).setTextColor(140).text("Confidential — internal management use. Figures are calculated from live action plan records.", 36, doc.internal.pageSize.getHeight() - 16);
   return Buffer.from(doc.output("arraybuffer"));
 }

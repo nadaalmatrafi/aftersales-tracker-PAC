@@ -1,124 +1,120 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
-import { listActions, lookups, parseFilters } from "@/lib/queries";
-import { meetingOptions } from "@/lib/meetings";
-import { holders, impactSummary, kpis, monthlyTrend, objectiveProgress, overdueAging, statusBreakdown } from "@/lib/dashboard";
-import { fmtRelative, todayISO, fmtDate } from "@/lib/dates";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
+import { requireUser, selfAndDelegators } from "@/lib/auth";
+import { listActions, loadActionAccess } from "@/lib/queries";
+import { canApproveAction } from "@/lib/access";
+import { objectiveVisibility } from "@/lib/objectives";
+import { addDaysISO, fmtDate, fmtDateTime, todayISO } from "@/lib/dates";
+import { DEADLINE_SOON_DAYS } from "@/lib/constants";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar } from "@/components/filter-bar";
-import { KpiCard, PageHeader, Section, EmptyState } from "@/components/ui";
-import { SingleBars, StatusStack, TrendChart } from "@/components/charts";
+import { Badge, EmptyState, KpiCard, PageHeader, Section } from "@/components/ui";
 
-export const metadata = { title: "Executive Dashboard" };
+export const metadata = { title: "My Work" };
 
-const sar = (n: number) => (n ? `SAR ${Math.round(n).toLocaleString("en-US")}` : "—");
-
-export default async function Dashboard({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+/** Landing page: what is waiting on me right now. */
+export default async function MyWork() {
   const u = await requireUser();
-  const sp = await searchParams;
-  const f = parseFilters(sp);
-  const [rows, lk, meetings, impact, objectives] = await Promise.all([listActions(u, f), lookups(), meetingOptions(u), impactSummary(u, f), objectiveProgress(u, f.org)]);
-  const k = kpis(rows, lk.orgs);
-  const qs = (extra: Record<string, string>) => {
-    const p = new URLSearchParams(Object.entries(sp).filter(([, v]) => typeof v === "string" && v) as [string, string][]);
-    for (const [a, b] of Object.entries(extra)) p.set(a, b);
-    return `/actions?${p.toString()}`;
-  };
+  const mine = selfAndDelegators(u);
+  const today = todayISO();
+  const soon = addDaysISO(today, DEADLINE_SOON_DAYS);
+  const [rows, pendingApprovals, deliverables, notes, myLeave, covering] = await Promise.all([
+    listActions(u, {}),
+    db.execute(sql`SELECT r.id, r.action_id, r.requested_by, r.type::text, r.requested_date::text AS req_date FROM approval_records r
+                   JOIN action_plans a ON a.id = r.action_id WHERE r.status = 'pending' AND a.deleted_at IS NULL AND r.requested_by <> ${u.id}`),
+    db.execute(sql`SELECT i.id, i.deliverable, i.deadline::text AS dl, i.approval_status, o.title, o.horizon::text AS horizon
+                   FROM objective_items i JOIN objectives o ON o.id = i.objective_id
+                   WHERE o.archived_at IS NULL AND i.responsible_id = ${u.id} AND i.approval_status <> 'approved' AND ${objectiveVisibility(u)}
+                   ORDER BY i.deadline NULLS LAST LIMIT 10`),
+    db.execute(sql`SELECT id, title, link, created_at, read_at FROM notifications WHERE user_id = ${u.id} ORDER BY created_at DESC LIMIT 6`),
+    db.execute(sql`SELECT l.start_date::text AS s, l.end_date::text AS e, d.name FROM leave_periods l JOIN users d ON d.id = l.delegate_id
+                   WHERE l.user_id = ${u.id} AND l.cancelled_at IS NULL AND l.end_date >= ${today}::date ORDER BY l.start_date LIMIT 1`),
+    db.execute(sql`SELECT u.name, l.end_date::text AS e FROM leave_periods l JOIN users u ON u.id = l.user_id
+                   WHERE l.delegate_id = ${u.id} AND l.cancelled_at IS NULL AND ${today}::date BETWEEN l.start_date AND l.end_date`),
+  ]);
   const open = rows.filter((a) => a.status !== "completed" && a.status !== "cancelled");
-  const attention = open.filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical" || a.status === "pending_approval").slice(0, 12);
-  const people = holders(rows).slice(0, 10);
-  const byOrg = statusBreakdown(rows, (a) => a.org_codes);
-  const byDirector = statusBreakdown(rows, (a) => a.director_name, "No director assigned");
-  const byDept = statusBreakdown(rows, (a) => a.department, "Department not assigned");
-  const aging = overdueAging(rows);
+  const withMe = open.filter((a) => a.waiting_on_id === u.id && a.waiting_reason !== "approval");
+
+  // Approvals: only requests this user may decide (assigner or anyone above, never their own).
+  const approvalIds = new Set<number>();
+  for (const r of pendingApprovals.rows as { action_id: number; requested_by: string }[]) {
+    const access = await loadActionAccess(u, r.action_id);
+    if (access && canApproveAction(u, access, r.requested_by)) approvalIds.add(r.action_id);
+  }
+  const approvals = rows.filter((a) => approvalIds.has(a.id));
+  const myActions = open.filter((a) => mine.includes(a.owner_id));
+  const withMeIds = new Set(withMe.map((a) => a.id));
+  // Your actions that are currently with someone else (so nothing is listed twice).
+  const myElsewhere = myActions.filter((a) => !withMeIds.has(a.id) && !approvalIds.has(a.id));
+  const myOverdue = myActions.filter((a) => a.effective_status === "overdue");
+  const myDueSoon = myActions.filter((a) => a.target_date && a.target_date >= today && a.target_date <= soon);
+  const leave = myLeave.rows[0] as { s: string; e: string; name: string } | undefined;
+  const cover = covering.rows as { name: string; e: string }[];
+  const dlv = deliverables.rows as { id: number; deliverable: string; dl: string | null; approval_status: string; title: string; horizon: string }[];
+  const nts = notes.rows as { id: number; title: string; link: string | null; created_at: string; read_at: string | null }[];
 
   return (
     <>
-      <PageHeader
-        title="Executive Dashboard"
-        subtitle={<>Live figures from action plan records · {fmtDate(todayISO())} · {u.name}</>}
-        actions={<Link href="/reports" className="btn btn-secondary">Reports</Link>}
-      />
-      <FilterBar f={f} lk={lk} meetings={meetings} action="/" showSearch={false} />
+      <PageHeader title="My Work" subtitle={<>What is waiting on you · {fmtDate(today)} · {u.name}</>} actions={<Link href="/overview" className="btn btn-secondary">Overview</Link>} />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <KpiCard label="Total action plans" value={k.total} href={qs({})} />
-        <KpiCard label="Active" value={k.active} tone="info" href={qs({})} />
-        <KpiCard label="Completed" value={k.completed} tone="ok" href={qs({ status: "completed" })} />
-        <KpiCard label="Overdue" value={k.overdue} tone="danger" href={qs({ status: "overdue" })} />
-        <KpiCard label="Pending approval" value={k.pendingApproval} tone="warn" href={qs({ status: "pending_approval" })} />
-        <KpiCard label="Critical issues" value={k.critical} tone="danger" hint="Critical priority or escalated" href={qs({ escalated: "1" })} />
-        <KpiCard label="Completion rate" value={k.completionRate == null ? "—" : `${k.completionRate}%`} hint="Completed ÷ non-cancelled" />
-        <KpiCard label="Due in 7 days" value={k.upcoming} tone="warn" href={qs({ dueSoon: "1" })} />
-        <KpiCard label="No update 7+ days" value={k.stale} tone="neutral" href={qs({ stale: "1" })} hint={k.noTargetDate ? `${k.noTargetDate} open without target date` : undefined} />
-        <KpiCard label="By organization" value={<span className="flex flex-wrap gap-x-3 text-base">{k.byOrg.map((o) => <span key={o.code}><span className="text-xs text-muted">{o.code}</span> {o.n}</span>)}</span>} />
+      {(leave || cover.length > 0) && (
+        <div className="mb-4 grid gap-2">
+          {leave && <p className="rounded-md border border-orange/50 bg-orange-soft px-4 py-2 text-sm">Your leave is set from {fmtDate(leave.s)} to {fmtDate(leave.e)}. <strong>{leave.name}</strong> covers your steps and approvals. <Link href="/account#leave" className="link font-medium">Change</Link></p>}
+          {cover.map((c) => (
+            <p key={c.name} className="rounded-md border border-orange/50 bg-orange-soft px-4 py-2 text-sm">You are covering for <strong>{c.name}</strong> until {fmtDate(c.e)}. Their steps and approvals appear below.</p>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <KpiCard label="With you now" value={withMe.length} tone="info" hint="Steps and actions waiting on you" />
+        <KpiCard label="Approvals for you" value={approvals.length} tone="warn" hint="Completion or extension requests" />
+        <KpiCard label="Your overdue actions" value={myOverdue.length} tone="danger" />
+        <KpiCard label="Your actions due in 7 days" value={myDueSoon.length} tone="warn" />
       </div>
 
       <div className="mt-5 grid gap-5">
-        <Section title="Requires attention — where each item stands" actions={<Link className="text-xs text-muted hover:text-fg" href={qs({})}>All actions →</Link>}>
-          <div className="-m-4">
-            <ActionTable rows={attention} emptyText="Nothing overdue, blocked, escalated or awaiting approval." />
-          </div>
+        <Section title={`Waiting on you (${withMe.length})`}>
+          <div className="-m-4"><ActionTable rows={withMe} compact emptyText="Nothing is waiting on you right now." /></div>
         </Section>
-      </div>
-      <div className="mt-5 grid gap-5 lg:grid-cols-2">
-        <Section title="Who is holding open work — current bottlenecks">
-          {people.length === 0 ? (
-            <EmptyState title="No open actions." />
-          ) : (
-            <div className="-m-4 overflow-x-auto"><table className="table">
-              <thead><tr><th>Person</th><th className="text-right">Open</th><th className="text-right">Overdue</th><th>Oldest</th></tr></thead>
-              <tbody>
-                {people.map((p) => (
-                  <tr key={p.name}>
-                    <td><div className="font-medium">{p.name}</div><div className="text-[11px] text-muted">{p.dept ?? ""}{p.approvals ? `${p.dept ? " · " : ""}${p.approvals} approval${p.approvals > 1 ? "s" : ""}` : ""}{p.blocked ? ` · ${p.blocked} blocked` : ""}</div></td>
-                    <td className="text-right tabular-nums">{p.open}</td>
-                    <td className={`text-right tabular-nums ${p.overdue ? "text-[#ff7b82]" : "text-muted"}`}>{p.overdue}</td>
-                    <td className="text-xs text-muted">{fmtRelative(p.oldest)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table></div>
-          )}
+        <Section title={`Approvals waiting for your decision (${approvals.length})`}>
+          <div className="-m-4"><ActionTable rows={approvals} compact emptyText="No requests are waiting for your decision." /></div>
         </Section>
-        <Section title="Monthly trend — created vs. completed">
-          <TrendChart data={monthlyTrend(rows)} />
-        </Section>
-        <Section title="Performance by organization">
-          {byOrg.length ? <StatusStack data={byOrg} /> : <EmptyState title="No data for the selected filters." />}
-        </Section>
-        <Section title="Performance by director">
-          {byDirector.length ? <StatusStack data={byDirector} /> : <EmptyState title="No data." />}
-        </Section>
-        <Section title="Department progress — average completion">
-          {byDept.length ? <SingleBars data={byDept.map((d) => ({ name: d.name, avgProgress: d.avgProgress }))} dataKey="avgProgress" name="Average progress" suffix="%" max={100} /> : <EmptyState title="No data." />}
-        </Section>
-        <Section title="Overdue analysis — days past target">
-          {k.overdue ? <SingleBars data={aging.map((a) => ({ name: a.bucket, count: a.count }))} dataKey="count" name="Overdue actions" color="#e2242f" /> : <EmptyState title="No overdue actions.">{k.noTargetDate ? `${k.noTargetDate} open action(s) have no target date and cannot become overdue — set dates to track them.` : null}</EmptyState>}
-        </Section>
-        <Section title="30 / 60 / 90-day objectives — checklist completion" actions={<Link className="text-xs text-muted hover:text-fg" href="/objectives">Open →</Link>}>
-          {objectives.some((o) => o.items) ? (
-            <SingleBars data={objectives.map((o) => ({ name: `${o.horizon} (${o.done}/${o.items})`, pct: o.pct }))} dataKey="pct" name="Deliverables complete" suffix="%" max={100} color="#199e70" />
-          ) : (
-            <EmptyState title="No objectives defined yet." />
-          )}
+        <Section title={`Your action plans currently with others (${myElsewhere.length})`} actions={<Link className="text-xs text-muted hover:text-accent" href="/actions">All action plans →</Link>}>
+          <div className="-m-4"><ActionTable rows={myElsewhere} compact emptyText="None of your action plans is waiting on someone else." /></div>
         </Section>
       </div>
 
-      <Section title="Business impact summary" className="mt-5">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-          <KpiCard label="Expected revenue" value={sar(impact.expected_revenue)} />
-          <KpiCard label="Confirmed revenue" value={sar(impact.actual_revenue)} tone="ok" />
-          <KpiCard label="Expected savings" value={sar(impact.expected_savings)} />
-          <KpiCard label="Confirmed savings" value={sar(impact.actual_savings)} tone="ok" />
-          <KpiCard label="Estimated cost" value={sar(impact.estimated_cost)} />
-          <KpiCard label="Confirmed cost" value={sar(impact.actual_cost)} />
-        </div>
-        <p className="mt-3 text-xs text-muted">
-          {impact.with_expected} action(s) with expected impact · {impact.confirmed} with confirmed actuals
-          {impact.unconfirmed ? ` · ${impact.unconfirmed} with actuals awaiting confirmation (excluded above)` : ""}. Only management-confirmed actual results are counted.
-        </p>
-      </Section>
+      <div className="mt-5 grid gap-5 lg:grid-cols-2">
+        <Section title="Your objective deliverables" actions={<Link className="text-xs text-muted hover:text-accent" href="/overview?obj=30#objectives">Open checklist →</Link>}>
+          {dlv.length === 0 ? <EmptyState title="No open deliverables assigned to you." /> : (
+            <ul className="space-y-2">
+              {dlv.map((d) => (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0"><span className="text-xs text-muted">{d.horizon}-day · {d.title}</span><br />{d.deliverable}</span>
+                  <span className="flex items-center gap-2">
+                    {d.approval_status === "pending" ? <Badge tone="warn">Awaiting approval</Badge> : d.dl && d.dl < today ? <Badge tone="danger">Overdue</Badge> : null}
+                    <span className="text-xs text-muted">{d.dl ? fmtDate(d.dl) : "No deadline"}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+        <Section title="Latest notifications" actions={<Link className="text-xs text-muted hover:text-accent" href="/notifications">All →</Link>}>
+          {nts.length === 0 ? <EmptyState title="No notifications yet." /> : (
+            <ul className="space-y-2">
+              {nts.map((n) => (
+                <li key={n.id} className="text-sm">
+                  {!n.read_at && <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" aria-label="Unread" />}
+                  {n.link ? <Link href={n.link} className="link">{n.title}</Link> : n.title}
+                  <span className="block text-xs text-muted">{fmtDateTime(n.created_at)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+      </div>
     </>
   );
 }

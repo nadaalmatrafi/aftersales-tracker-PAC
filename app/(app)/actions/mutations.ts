@@ -5,18 +5,20 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { actionUser, canCreateActions, isExecutive, AuthError, type CurrentUser } from "@/lib/auth";
+import { actionUser, canCreateActions, isExecutive, selfAndDelegators, AuthError, type CurrentUser } from "@/lib/auth";
 import {
   canApproveAction,
   canDeleteAction,
   canManageAction,
   canManageSteps,
   canReassignAction,
+  canRequestUpdate,
   canUpdateAction,
   isActionOwner,
   type ActionAccessRow,
 } from "@/lib/access";
-import { loadActionAccess } from "@/lib/queries";
+import { listActions, loadActionAccess } from "@/lib/queries";
+import { todayISO } from "@/lib/dates";
 import { audit, diff } from "@/lib/audit";
 import { notify, escalationRecipients } from "@/lib/notify";
 import { CATEGORIES, MAX_ATTACHMENT_BYTES, PRIORITIES, STEP_STATUSES, type StepStatus } from "@/lib/constants";
@@ -44,6 +46,7 @@ function handle(e: unknown): FormState {
 const done = (id: number) => {
   revalidatePath(`/actions/${id}`);
   revalidatePath("/actions");
+  revalidatePath("/overview");
   revalidatePath("/");
 };
 
@@ -107,8 +110,6 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
     if (!c.orgIds.length) return fail("Select at least one organization.");
     if (c.startDate && c.targetDate && c.targetDate < c.startDate) return fail("Target date cannot be before the start date.");
     const ownerId = (await validUser(uuid(fd, "ownerId"))) ?? u.id;
-    const meetingId = uuid(fd, "meetingId");
-    const decisionId = int(fd, "decisionId");
 
     const dup = await db.execute(sql`SELECT code FROM action_plans WHERE deleted_at IS NULL AND lower(trim(point_task)) = lower(trim(${c.pointTask})) LIMIT 1`);
     if (dup.rows.length) return fail(`An action with the same Point / Task already exists (${(dup.rows[0] as { code: string }).code}).`);
@@ -130,7 +131,6 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
         businessImpact: c.businessImpact,
         timelineNote: c.timelineNote,
         isConfidential: c.isConfidential,
-        meetingId,
         createdBy: u.id,
       });
       await tx.insert(schema.actionOrganizations).values(c.orgIds.map((o) => ({ actionId: id, organizationId: o })));
@@ -139,8 +139,6 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
       if (c.contributorIds.length)
         await tx.insert(schema.actionContributors).values([...new Set(c.contributorIds)].map((x) => ({ actionId: id, userId: x }))).onConflictDoNothing();
       await tx.insert(schema.actionAssignments).values({ actionId: id, toUserId: ownerId, assignedById: u.id, note: "Created" });
-      if (meetingId && decisionId)
-        await tx.update(schema.meetingDecisions).set({ actionId: id }).where(and(eq(schema.meetingDecisions.id, decisionId), eq(schema.meetingDecisions.meetingId, meetingId)));
       await audit(u.id, "action", id, "create", { code, ...c }, tx);
       return id;
     });
@@ -344,7 +342,8 @@ export async function setStepStatus(_: FormState, fd: FormData): Promise<FormSta
     if (!step) return fail("Step not found.");
     const a = await loadActionAccess(u, step.actionId);
     if (!a) return fail("Action not accessible.");
-    if (!(canManageSteps(u, a) || step.assigneeId === u.id)) return fail("Only the step assignee or the action owner can update this step.");
+    const coversAssignee = !!step.assigneeId && selfAndDelegators(u).includes(step.assigneeId);
+    if (!(canManageSteps(u, a) || coversAssignee)) return fail("Only the step assignee (or their delegate) or the action owner can update this step.");
     if (status === "skipped" && !canManageSteps(u, a)) return fail("Only the action owner can skip a step.");
     const note = str(fd, "note", 1000);
     if (status === "blocked" && !note) return fail("Describe what is blocking this step.");
@@ -533,7 +532,9 @@ export async function removeAttachment(_: FormState, fd: FormData): Promise<Form
 
 async function approversFor(a: ActionAccessRow): Promise<string[]> {
   const res = await db.execute(sql`SELECT u.id FROM users u JOIN user_permissions p ON p.user_id = u.id WHERE u.is_active AND p.permission = 'approve_completion'`);
-  const list = [a.assignedById, a.departmentDirectorId, ...res.rows.map((r) => (r as { id: string }).id)].filter((x): x is string => !!x && x !== a.ownerId);
+  const cms = await db.execute(sql`SELECT DISTINCT u.id FROM users u JOIN user_organizations uo ON uo.user_id = u.id
+    JOIN action_organizations ao ON ao.organization_id = uo.organization_id WHERE u.is_active AND u.role = 'company_manager' AND ao.action_id = ${a.id}`);
+  const list = [a.assignedById, a.departmentDirectorId, ...cms.rows.map((r) => (r as { id: string }).id), ...res.rows.map((r) => (r as { id: string }).id)].filter((x): x is string => !!x && x !== a.ownerId);
   if (!list.length) {
     const ceo = await db.execute(sql`SELECT id FROM users WHERE is_active AND role = 'ceo'`);
     list.push(...ceo.rows.map((r) => (r as { id: string }).id));
@@ -649,7 +650,6 @@ export async function decideApproval(_: FormState, fd: FormData): Promise<FormSt
       dedupeKey: `decision:${approvalId}`,
     });
     done(id);
-    revalidatePath("/meetings");
     return ok(`Request ${decision}.`);
   } catch (e) {
     return handle(e);
@@ -674,8 +674,10 @@ export async function escalateAction(_: FormState, fd: FormData): Promise<FormSt
     });
     if (!resolve) {
       const info = await actionCode(id);
+      const cms = await db.execute(sql`SELECT DISTINCT u.id FROM users u JOIN user_organizations uo ON uo.user_id = u.id
+        JOIN action_organizations ao ON ao.organization_id = uo.organization_id WHERE u.is_active AND u.role = 'company_manager' AND ao.action_id = ${id}`);
       await notify({
-        userIds: await escalationRecipients(),
+        userIds: [...(await escalationRecipients()), ...cms.rows.map((r) => (r as { id: string }).id)],
         excludeUserId: u.id,
         type: "escalation",
         title: `Critical escalation: ${info.code}`,
@@ -722,6 +724,35 @@ export async function deleteAction(_: FormState, fd: FormData): Promise<FormStat
   }
   revalidatePath("/actions");
   redirect("/actions?deleted=1");
+}
+
+/* ---------- Request an update from whoever currently holds the action ---------- */
+
+export async function requestUpdate(_: FormState, fd: FormData): Promise<FormState> {
+  try {
+    const { u, id } = await guard(fd, canRequestUpdate, "Only management above this action can request an update.");
+    const [row] = await listActions(u, { ids: [id] });
+    if (!row || row.waiting_reason === "closed" || !row.waiting_on_id) return fail("This action is closed; there is nobody to ask.");
+    if (row.waiting_on_id === u.id) return fail("This action is currently with you.");
+    const message = str(fd, "message", 1000);
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, note: `Update requested from ${row.waiting_on_name}${message ? `: ${message}` : ""}` });
+      await audit(u.id, "action", id, "update_request", { holder: row.waiting_on_id, actingFor: row.acting_for, message }, tx);
+    });
+    await notify({
+      userIds: [row.waiting_on_id],
+      type: "update_request",
+      title: `Update requested: ${row.code}`,
+      body: `${u.name} asks for an update on:\n${row.point_task}${row.waiting_on_step ? `\n\nYour step: ${row.waiting_on_step}` : ""}${message ? `\n\nMessage: ${message}` : ""}`,
+      link: `/actions/${id}`,
+      // At most one request per requester, holder and action per day.
+      dedupeKey: `update-request:${id}:${row.waiting_on_id}:${u.id}:${todayISO()}`,
+    });
+    done(id);
+    return ok(`Update requested from ${row.waiting_on_name}.`);
+  } catch (e) {
+    return handle(e);
+  }
 }
 
 /* ---------- Business impact ---------- */

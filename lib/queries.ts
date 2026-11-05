@@ -1,9 +1,10 @@
 import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
-import type { CurrentUser } from "./auth";
+import { seesAllActions, type CurrentUser } from "./auth";
 import { actionVisibility, type ActionAccessRow } from "./access";
 import { todayISO } from "./dates";
+import { activeDelegations } from "./leave";
 import { STATUSES, PRIORITIES, type Status } from "./constants";
 
 export type ActionFilters = {
@@ -11,9 +12,10 @@ export type ActionFilters = {
   dept?: number;
   director?: string;
   owner?: string;
+  /** Hierarchy filter: actions involving this person or the part of the organization they lead. */
+  person?: string;
   status?: Status;
   priority?: string;
-  meeting?: string;
   from?: string;
   to?: string;
   q?: string;
@@ -40,9 +42,9 @@ export function parseFilters(sp: Record<string, string | string[] | undefined>):
     dept: int("dept"),
     director: UUID.test(g("director") ?? "") ? g("director") : undefined,
     owner: UUID.test(g("owner") ?? "") ? g("owner") : undefined,
+    person: UUID.test(g("person") ?? "") ? g("person") : undefined,
     status: (STATUSES as readonly string[]).includes(status ?? "") ? (status as Status) : undefined,
     priority: (PRIORITIES as readonly string[]).includes(priority ?? "") ? priority : undefined,
-    meeting: UUID.test(g("meeting") ?? "") ? g("meeting") : undefined,
     from: ISO.test(g("from") ?? "") ? g("from") : undefined,
     to: ISO.test(g("to") ?? "") ? g("to") : undefined,
     q: g("q")?.slice(0, 100),
@@ -67,7 +69,15 @@ export function filterSql(f: ActionFilters, today: string): SQL {
   if (f.owner) parts.push(sql`a.owner_id = ${f.owner}`);
   if (f.status) parts.push(sql`${effectiveStatusSql(today)} = ${f.status}`);
   if (f.priority) parts.push(sql`a.priority = ${f.priority}`);
-  if (f.meeting) parts.push(sql`a.meeting_id = ${f.meeting}`);
+  if (f.person)
+    parts.push(sql`(a.owner_id = ${f.person} OR a.assigned_by_id = ${f.person}
+      OR EXISTS (SELECT 1 FROM action_steps s WHERE s.action_id = a.id AND s.assignee_id = ${f.person})
+      OR EXISTS (SELECT 1 FROM action_contributors c WHERE c.action_id = a.id AND c.user_id = ${f.person})
+      OR a.department_id IN (SELECT id FROM departments WHERE director_id = ${f.person})
+      OR EXISTS (SELECT 1 FROM action_steps s JOIN departments d ON d.id = s.department_id WHERE s.action_id = a.id AND d.director_id = ${f.person})
+      OR EXISTS (SELECT 1 FROM users pu JOIN user_organizations uo ON uo.user_id = pu.id
+                 JOIN action_organizations ao ON ao.organization_id = uo.organization_id
+                 WHERE pu.id = ${f.person} AND pu.role = 'company_manager' AND ao.action_id = a.id))`);
   if (f.category) parts.push(sql`a.category::text = ${f.category}`);
   if (f.from) parts.push(sql`(a.created_at::date >= ${f.from}::date OR a.target_date >= ${f.from}::date)`);
   if (f.to) parts.push(sql`(a.created_at::date <= ${f.to}::date OR a.target_date <= ${f.to}::date)`);
@@ -115,6 +125,8 @@ export type ActionRow = {
   waiting_on_dept: string | null;
   waiting_on_step: string | null;
   waiting_reason: "approval" | "step" | "owner" | "closed";
+  /** Set when the holder is on leave: the name of the person the delegate is covering for. */
+  acting_for: string | null;
   waiting_since: string | null;
   step_blocked: boolean;
   remaining_steps: string[];
@@ -156,7 +168,19 @@ export async function listActions(u: CurrentUser, f: ActionFilters = {}, opts: {
      ORDER BY ${order}
      ${opts.limit ? sql`LIMIT ${opts.limit}` : sql``}
   `);
-  return (res.rows as Record<string, unknown>[]).map(toActionRow);
+  const rows = (res.rows as Record<string, unknown>[]).map(toActionRow);
+  const leave = await activeDelegations();
+  if (leave.size) {
+    for (const r of rows) {
+      const d = r.waiting_on_id ? leave.get(r.waiting_on_id) : undefined;
+      if (d) {
+        r.acting_for = d.userName;
+        r.waiting_on_id = d.delegateId;
+        r.waiting_on_name = d.delegateName;
+      }
+    }
+  }
+  return rows;
 }
 
 function toActionRow(r: Record<string, unknown>): ActionRow {
@@ -228,6 +252,7 @@ function toActionRow(r: Record<string, unknown>): ActionRow {
     steps_total: r.steps_total as number,
     steps_done: r.steps_done as number,
     remaining_steps: (r.remaining_steps as string[]) ?? [],
+    acting_for: null,
     ...waiting,
   };
 }
@@ -237,7 +262,8 @@ export async function loadActionAccess(u: CurrentUser, id: number): Promise<Acti
   const res = await db.execute(sql`
     SELECT a.id, a.owner_id, a.assigned_by_id, a.created_by, a.department_id, a.status::text, d.director_id,
       COALESCE((SELECT array_agg(c.user_id::text) FROM action_contributors c WHERE c.action_id = a.id), '{}') AS contributor_ids,
-      COALESCE((SELECT array_agg(DISTINCT s.assignee_id::text) FROM action_steps s WHERE s.action_id = a.id AND s.assignee_id IS NOT NULL), '{}') AS step_ids
+      COALESCE((SELECT array_agg(DISTINCT s.assignee_id::text) FROM action_steps s WHERE s.action_id = a.id AND s.assignee_id IS NOT NULL), '{}') AS step_ids,
+      COALESCE((SELECT array_agg(ao.organization_id) FROM action_organizations ao WHERE ao.action_id = a.id), '{}') AS org_ids
     FROM action_plans a LEFT JOIN departments d ON d.id = a.department_id
     WHERE a.id = ${id} AND ${actionVisibility(u)}`);
   const r = res.rows[0] as Record<string, unknown> | undefined;
@@ -251,6 +277,7 @@ export async function loadActionAccess(u: CurrentUser, id: number): Promise<Acti
     departmentDirectorId: (r.director_id as string) ?? null,
     contributorIds: (r.contributor_ids as string[]) ?? [],
     stepAssigneeIds: (r.step_ids as string[]) ?? [],
+    orgIds: (r.org_ids as number[]) ?? [],
     status: r.status as string,
   };
 }
@@ -271,4 +298,42 @@ export async function lookups(): Promise<Lookup> {
                    FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.is_active ORDER BY u.name`),
   ]);
   return { orgs: orgs.rows as Lookup["orgs"], departments: depts.rows as Lookup["departments"], users: users.rows as Lookup["users"] };
+}
+
+export type PersonOption = { id: string; name: string; detail: string };
+
+/**
+ * People the user can filter by — the level directly below them:
+ * System Owner and view-all users (Abdullah Qadi) see everyone; the CEO sees company managers;
+ * a company manager sees the directors of their company; a director sees their department; a manager their reports.
+ * Employees get an empty list (the filter is hidden).
+ */
+export async function peopleOptions(u: CurrentUser): Promise<PersonOption[]> {
+  let where;
+  if (u.role === "system_owner" || (seesAllActions(u) && u.role !== "ceo")) {
+    where = sql`u.id <> ${u.id}`;
+  } else if (u.role === "ceo") {
+    where = sql`u.role = 'company_manager'`;
+  } else if (u.role === "company_manager") {
+    const orgs = u.orgIds.length ? sql.join(u.orgIds.map((o) => sql`${o}`), sql`, `) : sql`-1`;
+    where = sql`(u.id IN (SELECT director_id FROM departments WHERE organization_id IN (${orgs}) AND director_id IS NOT NULL)
+                 OR (u.role = 'director' AND u.department_id IN (SELECT id FROM departments WHERE organization_id IN (${orgs}))))`;
+  } else if (u.role === "director") {
+    where = sql`u.id <> ${u.id} AND (u.manager_id = ${u.id} OR u.department_id = ${u.departmentId ?? -1}
+                 OR u.department_id IN (SELECT id FROM departments WHERE director_id = ${u.id}))`;
+  } else if (u.role === "manager") {
+    where = sql`u.manager_id = ${u.id}`;
+  } else {
+    return [];
+  }
+  const r = await db.execute(sql`
+    SELECT u.id, u.name, u.role::text AS role, d.name AS dept,
+           (SELECT string_agg(o.code, ', ' ORDER BY o.id) FROM user_organizations uo JOIN organizations o ON o.id = uo.organization_id WHERE uo.user_id = u.id) AS orgs
+      FROM users u LEFT JOIN departments d ON d.id = u.department_id
+     WHERE u.is_active AND ${where} ORDER BY u.name`);
+  return (r.rows as { id: string; name: string; role: string; dept: string | null; orgs: string | null }[]).map((p) => ({
+    id: p.id,
+    name: p.name,
+    detail: p.role === "company_manager" ? `Company Manager${p.orgs ? ` · ${p.orgs}` : ""}` : (p.dept ?? ""),
+  }));
 }

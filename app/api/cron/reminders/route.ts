@@ -2,10 +2,40 @@ import crypto from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
-import { notify } from "@/lib/notify";
-import { addDaysISO, fmtDate, fmtDateTime, todayISO } from "@/lib/dates";
+import { notify, escalationRecipients } from "@/lib/notify";
+import { listActions } from "@/lib/queries";
+import { addDaysISO, fmtDate, todayISO } from "@/lib/dates";
+import { staleAlertDays } from "@/lib/settings";
+import type { CurrentUser } from "@/lib/auth";
 
-/** Daily reminder sweep. Dedupe keys make re-runs safe: each reminder is sent at most once per period. */
+/** Read-only system identity used to evaluate every action (never used for writes). */
+const SYSTEM: CurrentUser = {
+  id: "00000000-0000-0000-0000-000000000000",
+  name: "System",
+  email: "",
+  role: "system_owner",
+  title: null,
+  departmentId: null,
+  managerId: null,
+  mustChangePassword: false,
+  permissions: new Set(),
+  orgIds: [],
+  actingFor: [],
+};
+
+/** Direct manager of a user: their manager, else their department director, else their company manager. */
+async function managerOf(userId: string): Promise<string | null> {
+  const r = await db.execute(sql`
+    SELECT COALESCE(
+      (SELECT m.id FROM users m WHERE m.id = u.manager_id AND m.is_active),
+      (SELECT d.director_id FROM departments d JOIN users dir ON dir.id = d.director_id WHERE d.id = u.department_id AND d.director_id <> u.id AND dir.is_active),
+      (SELECT cm.id FROM users cm JOIN user_organizations uo ON uo.user_id = cm.id JOIN departments d2 ON d2.organization_id = uo.organization_id
+        WHERE d2.id = u.department_id AND cm.role = 'company_manager' AND cm.is_active AND cm.id <> u.id LIMIT 1)
+    ) AS mgr FROM users u WHERE u.id = ${userId}`);
+  return (r.rows[0] as { mgr: string | null } | undefined)?.mgr ?? null;
+}
+
+/** Daily sweep. Dedupe keys make re-runs safe: each reminder is sent at most once per period. */
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   const given = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
@@ -14,7 +44,9 @@ export async function GET(req: NextRequest) {
 
   const today = todayISO();
   const week = `${today.slice(0, 4)}-w${Math.ceil((Number(new Date(`${today}T00:00:00Z`)) - Date.UTC(Number(today.slice(0, 4)), 0, 1)) / 604_800_000 + 1)}`;
-  let dueSoon = 0, overdue = 0, meetings = 0;
+  let dueSoon = 0,
+    overdue = 0,
+    stale = 0;
 
   const soon = await db.execute(sql`SELECT a.id, a.code, a.point_task, a.owner_id, a.target_date::text AS t FROM action_plans a
     WHERE a.deleted_at IS NULL AND a.status NOT IN ('completed','cancelled') AND a.target_date BETWEEN ${today}::date AND ${addDaysISO(today, 3)}::date`);
@@ -30,11 +62,27 @@ export async function GET(req: NextRequest) {
     overdue++;
   }
 
-  const m = await db.execute(sql`SELECT m.id, m.title, m.meeting_at, array_agg(ma.user_id::text) AS att FROM meetings m JOIN meeting_attendees ma ON ma.meeting_id = m.id
-    WHERE m.status = 'scheduled' AND m.meeting_at BETWEEN now() AND now() + interval '36 hours' GROUP BY m.id`);
-  for (const x of m.rows as { id: string; title: string; meeting_at: string; att: string[] }[]) {
-    await notify({ userIds: x.att, type: "meeting", title: `Upcoming meeting: ${x.title}`, body: `${fmtDateTime(x.meeting_at)} (Riyadh time). Review your open actions before the meeting.`, link: `/meetings/${x.id}`, dedupeKey: `meeting_reminder:${x.id}:${new Date(x.meeting_at).toISOString()}` });
-    meetings++;
+  // No-progress alert: an action sitting with the same person for N days without any update alerts that person's manager.
+  const days = await staleAlertDays();
+  const cutoff = Date.now() - days * 86_400_000;
+  const rows = await listActions(SYSTEM, {});
+  for (const a of rows) {
+    if (a.waiting_reason === "closed" || !a.waiting_on_id) continue;
+    const last = Math.max(...[a.last_update_at, a.waiting_since, a.created_at].filter(Boolean).map((v) => new Date(v as string).getTime()));
+    if (last > cutoff) continue;
+    const holder = a.waiting_on_id;
+    const mgr = await managerOf(holder);
+    const recipients = mgr && mgr !== holder ? [mgr] : (await escalationRecipients()).filter((x) => x !== holder);
+    const idleDays = Math.floor((Date.now() - last) / 86_400_000);
+    await notify({
+      userIds: recipients,
+      type: "stale_alert",
+      title: `No progress for ${idleDays} days: ${a.code}`,
+      body: `${a.point_task}\n\nCurrently with ${a.waiting_on_name}${a.acting_for ? ` (covering for ${a.acting_for})` : ""}${a.waiting_on_step ? ` — ${a.waiting_on_step}` : ""}. No update since ${fmtDate(new Date(last))}.`,
+      link: `/actions/${a.id}`,
+      dedupeKey: `stale:${a.id}:${holder}:${new Date(last).toISOString().slice(0, 10)}`,
+    });
+    stale++;
   }
-  return NextResponse.json({ ok: true, dueSoon, overdue, meetings });
+  return NextResponse.json({ ok: true, dueSoon, overdue, stale, staleAfterDays: days });
 }

@@ -51,3 +51,15 @@ because none of the source timelines is a calendar date. Suggested owners are ke
 ## Rollback
 All migrations add tables only. Rollback = stop the new app and restore the pre-migration `pg_dump`
 (`scripts/backup.sh`, `scripts/restore-test.sh`). Production must not be touched without explicit approval.
+
+## Revision 2 — 2026-11-05 (owner review)
+- Added role `company_manager` (one per company, scoped by company access) between CEO and directors; sees, creates, distributes,
+  approves and escalates for their company. Abdullah Qadi keeps view-all + approve rights.
+- Approval rule: assigner or anyone above; self-approval blocked for every role.
+- Hierarchy People filter replaces search on Action Plans; Status and Company filters added.
+- Landing page "My Work"; dashboard renamed "Overview"; 30/60/90 objectives moved into Overview as a compact card + in-place checklist.
+- Removed meetings (pages, Google Calendar integration, meeting report and reminders). Tables remain for data preservation.
+- Added: request-update notifications, daily no-progress alert to the holder's manager (configurable days), leave periods with delegates
+  (`leave_periods`), username sign-in (`users.username`), one-page CEO PDF.
+- Migration `0001_hierarchy_username_leave.sql` is additive only (enum value, nullable column, new table).
+- Visual identity: Petromin Auto Care logo, white background, logo colours; status colours unchanged.

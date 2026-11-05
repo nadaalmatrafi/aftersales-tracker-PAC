@@ -27,11 +27,15 @@ try {
     const r = await c.query("INSERT INTO departments (organization_id, name) VALUES ($1,$2) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org[o], n]);
     d[`${o}:${n}`] = r.rows[0].id;
   }
+  // [name, email, role, department, manager email, username, company (for company managers)]
   const users = [
-    ["Demo CEO", "ceo@demo.local", "ceo", null, null],
-    ["Hasan (Demo)", "hasan@demo.local", "director", "PAC:Marketing", null],
+    ["Demo CEO", "ceo@demo.local", "ceo", null, null, "ceo"],
+    ["PAC Company Manager (Demo)", "pac.gm@demo.local", "company_manager", null, null, "pac.gm", "PAC"],
+    ["PCVC Company Manager (Demo)", "pcvc.gm@demo.local", "company_manager", null, null, "pcvc.gm", "PCVC"],
+    ["DEX Company Manager (Demo)", "dex.gm@demo.local", "company_manager", null, null, "dex.gm", "DEX"],
+    ["Hasan (Demo)", "hasan@demo.local", "director", "PAC:Marketing", null, "hasan"],
     ["Moe (Demo)", "moe@demo.local", "director", "PAC:Technical & Training", null],
-    ["Farhan (Demo)", "farhan@demo.local", "director", "PAC:Network Development", null],
+    ["Farhan (Demo)", "farhan@demo.local", "director", "PAC:Network Development", null, "farhan"],
     ["Nada (Demo)", "nada@demo.local", "director", "PAC:Operations", null],
     ["Brijesh (Demo)", "brijesh@demo.local", "director", "PAC:Products & Services", null],
     ["Finance Director (Demo)", "finance@demo.local", "director", "PAC:Finance", null],
@@ -40,13 +44,14 @@ try {
     ["PCVC Ops Director (Demo)", "pcvc@demo.local", "director", "PCVC:Operations", null],
   ];
   const ids = {};
-  for (const [name, email, role, dept, mgr] of users) {
+  for (const [name, email, role, dept, mgr, username, company] of users) {
     const r = await c.query(
-      `INSERT INTO users (name, email, role, department_id, manager_id, password_hash) VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO users (name, email, role, department_id, manager_id, password_hash, username) VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (lower(email)) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
-      [name, email, role, dept ? d[dept] : null, mgr ? ids[mgr] : null, hash(PW)],
+      [name, email, role, dept ? d[dept] : null, mgr ? ids[mgr] : null, hash(PW), username ?? null],
     );
     ids[email] = r.rows[0].id;
+    if (company) await c.query("INSERT INTO user_organizations (user_id, organization_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [r.rows[0].id, org[company]]);
   }
   for (const [k, email] of [["PAC:Marketing", "hasan@demo.local"], ["PAC:Technical & Training", "moe@demo.local"], ["PAC:Network Development", "farhan@demo.local"], ["PAC:Operations", "nada@demo.local"], ["PAC:Products & Services", "brijesh@demo.local"], ["PAC:Finance", "finance@demo.local"], ["PCVC:Operations", "pcvc@demo.local"]])
     await c.query("UPDATE departments SET director_id = $1 WHERE id = $2", [ids[email], d[k]]);

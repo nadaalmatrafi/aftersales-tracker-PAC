@@ -3,9 +3,9 @@ import { notFound } from "next/navigation";
 import { sql } from "drizzle-orm";
 import { ArrowDown, ArrowUp, Flame, Paperclip } from "lucide-react";
 import { db } from "@/db";
-import { requireUser, canSeeConfidential, isExecutive } from "@/lib/auth";
+import { requireUser, canSeeConfidential, isExecutive, selfAndDelegators } from "@/lib/auth";
 import { listActions, loadActionAccess, lookups } from "@/lib/queries";
-import { canApproveAction, canDeleteAction, canManageAction, canManageSteps, canReassignAction, canUpdateAction, isActionOwner } from "@/lib/access";
+import { canApproveAction, canDeleteAction, canManageAction, canManageSteps, canReassignAction, canRequestUpdate, canUpdateAction, isActionOwner } from "@/lib/access";
 import { CATEGORY_LABEL, STEP_STATUSES, STEP_STATUS_LABEL, type Category, type Priority, type StepStatus } from "@/lib/constants";
 import { fmtDate, fmtDateTime, fmtRelative } from "@/lib/dates";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -26,6 +26,7 @@ import {
   requestCompletion,
   requestExtension,
   saveImpact,
+  requestUpdate,
   setStepStatus,
   uploadAttachment,
 } from "../mutations";
@@ -57,13 +58,13 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
             LEFT JOIN users f ON f.id = x.from_user_id JOIN users t ON t.id = x.to_user_id LEFT JOIN users b ON b.id = x.assigned_by_id
             WHERE x.action_id = ${id} ORDER BY x.created_at`),
     q(sql`SELECT i.*, cu.name AS confirmed_name FROM impact_records i LEFT JOIN users cu ON cu.id = i.actuals_confirmed_by WHERE i.action_id = ${id}`),
-    q(sql`SELECT a.is_confidential, a.escalation_note, a.escalated_at, a.meeting_id, m.title AS meeting_title, ab.name AS approved_by,
+    q(sql`SELECT a.is_confidential, a.escalation_note, a.escalated_at, ab.name AS approved_by,
             COALESCE((SELECT array_agg(organization_id) FROM action_organizations WHERE action_id = a.id), '{}') AS org_ids,
             COALESCE((SELECT array_agg(department_id) FROM action_departments WHERE action_id = a.id), '{}') AS support_ids,
             COALESCE((SELECT array_agg(d.org_code || ' · ' || d.name) FROM action_departments ad JOIN (SELECT dd.id, dd.name, o.code AS org_code FROM departments dd JOIN organizations o ON o.id = dd.organization_id) d ON d.id = ad.department_id WHERE ad.action_id = a.id), '{}') AS support_names,
             COALESCE((SELECT array_agg(c.user_id::text) FROM action_contributors c WHERE c.action_id = a.id), '{}') AS contributor_ids,
             COALESCE((SELECT array_agg(uu.name) FROM action_contributors c JOIN users uu ON uu.id = c.user_id WHERE c.action_id = a.id), '{}') AS contributor_names
-          FROM action_plans a LEFT JOIN meetings m ON m.id = a.meeting_id LEFT JOIN users ab ON ab.id = a.approved_by_id WHERE a.id = ${id}`),
+          FROM action_plans a LEFT JOIN users ab ON ab.id = a.approved_by_id WHERE a.id = ${id}`),
     q(sql`SELECT l.action, l.created_at, l.changes, u.name FROM audit_logs l LEFT JOIN users u ON u.id = l.actor_id
             WHERE (l.entity_type = 'action' AND l.entity_id = ${String(id)}) ORDER BY l.created_at DESC LIMIT 50`),
   ]);
@@ -93,10 +94,11 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
       </div>
 
       {/* Where it stands — the CEO's answer in one panel */}
-      <section className="card grid gap-4 border-l-2 border-l-accent p-4 md:grid-cols-4" aria-label="Current position">
+      <section className="card grid gap-4 border-l-4 border-l-accent p-4 md:grid-cols-4" aria-label="Current position">
         <div>
           <p className="text-[11px] uppercase tracking-wider text-muted">Currently with</p>
           <p className="mt-1 text-base font-semibold">{closed ? "Closed" : a.waiting_on_name}</p>
+          {!closed && a.acting_for && <p className="text-xs font-medium text-orange">Covering for {a.acting_for} (on leave)</p>}
           {!closed && (
             <p className="text-xs text-muted">
               {a.waiting_reason === "approval" ? "Approval decision" : a.waiting_on_step ?? "Accountable owner"}
@@ -122,8 +124,8 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
           <p className="text-[11px] uppercase tracking-wider text-muted">Target</p>
           <p className="mt-1 font-medium">{a.target_date ? fmtDate(a.target_date) : "No date set"}</p>
           {a.timeline_note && <p className="text-xs text-muted">Original timeline: {a.timeline_note}</p>}
-          {a.blocker && <p className="mt-2 text-xs text-[#ff7b82]">Blocker: {a.blocker}</p>}
-          {a.is_escalated && !!x.escalation_note && <p className="mt-1 text-xs text-[#ff7b82]">Escalation: {String(x.escalation_note)}</p>}
+          {a.blocker && <p className="mt-2 text-xs text-accent">Blocker: {a.blocker}</p>}
+          {a.is_escalated && !!x.escalation_note && <p className="mt-1 text-xs text-accent">Escalation: {String(x.escalation_note)}</p>}
         </div>
       </section>
 
@@ -135,7 +137,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
             ) : (
               <ol className="space-y-2">
                 {steps.map((s, i) => {
-                  const mine = s.assignee_id === u.id;
+                  const mine = !!s.assignee_id && selfAndDelegators(u).includes(String(s.assignee_id));
                   const canAct = !closed && (stepsAllowed || mine);
                   const isCurrent = a.waiting_reason === "step" && a.waiting_on_step === s.title && !["done", "skipped"].includes(String(s.status));
                   return (
@@ -152,7 +154,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                             {(s.assignee_name as string) ?? "Unassigned"}{s.dept_name ? ` · ${s.dept_name}` : ""}{s.due ? ` · due ${fmtDate(s.due as string)}` : ""}
                             {s.completed_at ? ` · ${s.status === "done" ? "done" : "skipped"} ${fmtDateTime(s.completed_at as string)}${s.completed_by_name ? ` by ${s.completed_by_name}` : ""}` : ""}
                           </p>
-                          {!!s.blocker_note && <p className="mt-1 text-xs text-[#ff7b82]">Blocked: {String(s.blocker_note)}</p>}
+                          {!!s.blocker_note && <p className="mt-1 text-xs text-accent">Blocked: {String(s.blocker_note)}</p>}
                         </div>
                         {stepsAllowed && !closed && (
                           <div className="flex gap-1">
@@ -242,8 +244,8 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                   </select>
                 </Field>
                 <div className="flex flex-col justify-end gap-1 text-sm sm:col-span-2">
-                  <label className="inline-flex items-center gap-2"><input type="checkbox" name="isBlocker" className="accent-[#e2242f]" /> Report as blocker</label>
-                  {a.blocker && <label className="inline-flex items-center gap-2"><input type="checkbox" name="clearBlocker" className="accent-[#e2242f]" /> Blocker resolved</label>}
+                  <label className="inline-flex items-center gap-2"><input type="checkbox" name="isBlocker" className="accent-[#ce102c]" /> Report as blocker</label>
+                  {a.blocker && <label className="inline-flex items-center gap-2"><input type="checkbox" name="clearBlocker" className="accent-[#ce102c]" /> Blocker resolved</label>}
                 </div>
                 <div className="sm:col-span-4"><SubmitButton>Post update</SubmitButton></div>
               </ActionForm>
@@ -322,7 +324,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
               {update && (
                 <div className="flex flex-wrap items-center gap-4">
                   <SubmitButton className="btn btn-secondary">Save impact</SubmitButton>
-                  {(manage || canApproveAction(u, access)) && <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="confirmActuals" className="accent-[#e2242f]" /> Confirm actual results</label>}
+                  {(manage || canApproveAction(u, access)) && <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="confirmActuals" className="accent-[#ce102c]" /> Confirm actual results</label>}
                 </div>
               )}
             </ActionForm>
@@ -361,11 +363,21 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
               <dt className="text-muted">Target</dt><dd>{a.target_date ? fmtDate(a.target_date) : a.timeline_note ?? "—"}</dd>
               <dt className="text-muted">Objective area</dt><dd>{a.category ? CATEGORY_LABEL[a.category as Category] : "—"}</dd>
               {a.business_impact && <><dt className="text-muted">Impact</dt><dd className="whitespace-pre-line">{a.business_impact}</dd></>}
-              {!!x.meeting_id && <><dt className="text-muted">Meeting</dt><dd><Link className="link" href={`/meetings/${x.meeting_id}`}>{String(x.meeting_title)}</Link></dd></>}
               <dt className="text-muted">Last update</dt><dd>{a.last_update_at ? fmtDateTime(a.last_update_at) : "None yet"}</dd>
               {a.completed_at && <><dt className="text-muted">Completed</dt><dd>{fmtDateTime(a.completed_at)}{x.approved_by ? ` · approved by ${x.approved_by}` : ""}</dd></>}
             </dl>
           </Section>
+
+          {canRequestUpdate(u, access) && !closed && a.waiting_on_id && a.waiting_on_id !== u.id && (
+            <Section title="Request an update">
+              <ActionForm action={requestUpdate} className="space-y-2">
+                {hidden}
+                <p className="text-sm text-fg-2">Ask <strong>{a.waiting_on_name}</strong> for an update{a.waiting_on_step ? <> on “{a.waiting_on_step}”</> : null}. They are notified straight away.</p>
+                <input className="input" name="message" maxLength={1000} placeholder="Message (optional)" aria-label="Message" />
+                <SubmitButton className="btn btn-primary w-full" pendingText="Sending…">Request update</SubmitButton>
+              </ActionForm>
+            </Section>
+          )}
 
           {canReassignAction(u, access) && !closed && (
             <Section title="Assign / reassign">
@@ -479,7 +491,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
 
           {canDeleteAction(u) && (
             <details className="card">
-              <summary className="cursor-pointer px-4 py-3 text-sm text-[#ff7b82]">Delete action plan</summary>
+              <summary className="cursor-pointer px-4 py-3 text-sm text-accent">Delete action plan</summary>
               <ActionForm action={deleteAction} className="space-y-2 border-t border-line p-4">
                 {hidden}
                 <input className="input" name="reason" required maxLength={500} placeholder="Reason (kept in the audit log)" aria-label="Deletion reason" />

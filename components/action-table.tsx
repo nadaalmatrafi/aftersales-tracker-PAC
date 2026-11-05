@@ -13,6 +13,7 @@ export function WaitingOn({ a }: { a: ActionRow }) {
         {a.step_blocked && <AlertTriangle size={13} className="text-accent" aria-label="Blocked" />}
         {a.waiting_on_name}
       </div>
+      {a.acting_for && <div className="text-[11px] font-medium text-orange">covering for {a.acting_for}</div>}
       <div className="text-xs text-muted">
         {a.waiting_reason === "approval" ? "Approval decision" : a.waiting_on_step ?? "Owner"}
         {a.waiting_on_dept ? ` · ${a.waiting_on_dept}` : ""}
@@ -49,7 +50,7 @@ export function ActionTable({ rows, compact, emptyText = "No action plans match 
                   <OrgTags codes={a.org_codes} />
                   {a.priority !== "medium" && <PriorityBadge priority={a.priority as Priority} />}
                   {a.is_escalated && (
-                    <span className="inline-flex items-center gap-0.5 text-[11px] text-[#ff7b82]">
+                    <span className="inline-flex items-center gap-0.5 text-[11px] text-accent">
                       <Flame size={12} aria-hidden /> Escalated
                     </span>
                   )}
@@ -58,7 +59,7 @@ export function ActionTable({ rows, compact, emptyText = "No action plans match 
                   {a.point_task}
                 </Link>
                 {compact && <p className="mt-1 text-xs text-muted">Responsible: <span className="text-fg-2">{a.owner_name}</span>{a.department ? ` · ${a.department}` : ""}</p>}
-                {a.blocker && <p className="mt-1 line-clamp-1 text-xs text-[#ff7b82]">Blocker: {a.blocker}</p>}
+                {a.blocker && <p className="mt-1 line-clamp-1 text-xs text-accent">Blocker: {a.blocker}</p>}
               </td>
               {!compact && <td className="text-fg-2">{a.department ?? <span className="text-muted">Unassigned</span>}</td>}
               {!compact && (

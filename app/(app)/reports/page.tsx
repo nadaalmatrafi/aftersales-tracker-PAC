@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { requireUser, canExport } from "@/lib/auth";
-import { lookups, parseFilters } from "@/lib/queries";
-import { meetingOptions } from "@/lib/meetings";
+import { requireUser, canExport, seesAllActions } from "@/lib/auth";
+import { lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { buildReport, REPORTS, type ReportType } from "@/lib/reports";
-import { FilterBar } from "@/components/filter-bar";
+import { FilterBar, peopleLabelFor } from "@/components/filter-bar";
 import { EmptyState, PageHeader, cx } from "@/components/ui";
 
 export const metadata = { title: "Reports" };
@@ -13,9 +12,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const type = (typeof sp.type === "string" && sp.type in REPORTS ? sp.type : "executive") as ReportType;
   const f = parseFilters(sp);
-  const meetingId = typeof sp.meeting === "string" ? sp.meeting : undefined;
-  if (type === "meeting") delete f.meeting;
-  const [lk, meetings, report] = await Promise.all([lookups(), meetingOptions(u), buildReport(u, type, f, { meetingId })]);
+  const [lk, people, report] = await Promise.all([lookups(), peopleOptions(u), buildReport(u, type, f)]);
   const qs = new URLSearchParams(Object.entries(sp).filter(([k, v]) => typeof v === "string" && v && k !== "type") as [string, string][]).toString();
   const exportAllowed = canExport(u);
   return (
@@ -44,13 +41,13 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
           </ul>
         </nav>
         <div className="min-w-0">
-          <FilterBar f={{ ...f, meeting: meetingId }} lk={lk} meetings={meetings} action="/reports" extra={<input type="hidden" name="type" value={type} />} />
+          <FilterBar f={f} lk={lk} people={people} peopleLabel={peopleLabelFor(u.role, u.role === "system_owner" || (seesAllActions(u) && u.role !== "ceo"))} action="/reports" extra={<input type="hidden" name="type" value={type} />} />
           <div className="card">
             <header className="border-b border-line p-4">
               <h2 className="font-semibold">{report.title}</h2>
               <p className="text-xs text-muted">{REPORTS[type].desc} · {report.rows.length} row(s)</p>
             </header>
-            {type === "meeting" && !meetingId ? <div className="p-4"><EmptyState title="Choose a meeting in the filter bar." /></div> : report.rows.length === 0 ? <div className="p-4"><EmptyState title="No records match the selected filters." /></div> : (
+            {report.rows.length === 0 ? <div className="p-4"><EmptyState title="No records match the selected filters." /></div> : (
               <div className="max-h-[70vh] overflow-auto">
                 <table className="table">
                   <thead><tr>{report.columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>

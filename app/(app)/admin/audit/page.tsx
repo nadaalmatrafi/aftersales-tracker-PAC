@@ -19,12 +19,12 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
      WHERE TRUE ${entity ? sql`AND l.entity_type = ${entity}` : sql``} ${q ? sql`AND (l.action ILIKE ${"%" + q + "%"} OR u.name ILIKE ${"%" + q + "%"} OR l.entity_id = ${q})` : sql``}
      ORDER BY l.created_at DESC LIMIT 100 OFFSET ${(page - 1) * 100}`);
   const rows = r.rows as { id: number; name: string | null; entity_type: string; entity_id: string; action: string; changes: unknown; ip: string | null; created_at: string }[];
-  const link = (e: string, id: string) => (e === "action" ? `/actions/${id}` : e === "meeting" ? `/meetings/${id}` : null);
+  const link = (e: string, id: string) => (e === "action" ? `/actions/${id}` : null);
   return (
     <>
       <PageHeader title="Audit Log" subtitle="Every significant change, with actor, time and field-level detail." />
       <form className="card no-print mb-4 flex flex-wrap items-end gap-3 p-3">
-        <label><span className="label">Entity</span><select className="input" name="entity" defaultValue={entity ?? ""}><option value="">All</option>{["action", "action_step", "approval", "meeting", "objective", "objective_item", "user", "department", "auth", "report", "settings"].map((e) => <option key={e} value={e}>{e.replace("_", " ")}</option>)}</select></label>
+        <label><span className="label">Entity</span><select className="input" name="entity" defaultValue={entity ?? ""}><option value="">All</option>{["action", "action_step", "approval", "objective", "objective_item", "user", "department", "auth", "report", "settings"].map((e) => <option key={e} value={e}>{e.replace("_", " ")}</option>)}</select></label>
         <label><span className="label">Search</span><input className="input" name="q" defaultValue={q} placeholder="Action, person or record ID" /></label>
         <button className="btn btn-primary">Apply</button>
       </form>

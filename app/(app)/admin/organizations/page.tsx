@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
 import { requireUser } from "@/lib/auth";
 import { lookups } from "@/lib/queries";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -11,15 +13,18 @@ export default async function OrgAdmin() {
   const me = await requireUser();
   if (me.role !== "system_owner") notFound();
   const lk = await lookups();
-  const directors = lk.users.filter((u) => ["director", "ceo", "system_owner", "manager"].includes(u.role));
+  const cms = (await db.execute(sql`SELECT uo.organization_id, u.name FROM users u JOIN user_organizations uo ON uo.user_id = u.id
+                                    WHERE u.role = 'company_manager' AND u.is_active`)).rows as { organization_id: number; name: string }[];
+  const directors = lk.users.filter((u) => ["director", "company_manager", "ceo", "system_owner", "manager"].includes(u.role));
   return (
     <>
-      <PageHeader title="Organizations & Departments" subtitle="PAC, PCVC and DEX. Assign each department's director for accountability reporting." />
+      <PageHeader title="Companies & Departments" subtitle="PAC, PCVC and DEX. The company manager is set on the user (role Company Manager, one company). Assign each department's director here." />
       <div className="grid gap-5 lg:grid-cols-3">
         {lk.orgs.map((o) => {
           const depts = lk.departments.filter((d) => d.organization_id === o.id);
           return (
             <Section key={o.id} title={`${o.code} · ${depts.length} departments`}>
+              <p className="mb-3 text-sm">Company manager: <strong>{cms.find((c) => c.organization_id === o.id)?.name ?? <span className="text-muted">Not assigned</span>}</strong></p>
               <ActionForm action={saveOrganization} resetOnSuccess={false} className="mb-4 flex items-end gap-2">
                 <input type="hidden" name="organizationId" value={o.id} />
                 <Field label="Organization name" className="flex-1"><input className="input" name="name" defaultValue={o.name} required /></Field>

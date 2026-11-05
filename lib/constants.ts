@@ -1,8 +1,9 @@
-export const ROLES = ["system_owner", "ceo", "director", "manager", "employee"] as const;
+export const ROLES = ["system_owner", "ceo", "company_manager", "director", "manager", "employee"] as const;
 export type Role = (typeof ROLES)[number];
 export const ROLE_LABEL: Record<Role, string> = {
   system_owner: "System Owner",
   ceo: "CEO",
+  company_manager: "Company Manager",
   director: "Director",
   manager: "Manager",
   employee: "Employee",
@@ -11,7 +12,6 @@ export const ROLE_LABEL: Record<Role, string> = {
 export const PERMISSIONS = {
   view_all_actions: "View all action plans across organizations",
   assign_any: "Assign and reassign any action plan",
-  manage_meetings: "Create and manage executive meetings",
   manage_objectives: "Create and manage 30/60/90-day objectives",
   approve_completion: "Approve completions and deadline extensions",
   assign_subtasks: "Create workflow steps on owned actions",
@@ -73,12 +73,15 @@ export const NOTIFICATION_TYPES = {
   approval_request: "Approval request",
   rejection: "Task rejection",
   escalation: "Critical escalation",
-  meeting: "Upcoming executive meeting",
   step_handoff: "Workflow hand-off to you",
+  update_request: "Update requested from you",
+  stale_alert: "No progress from your team",
 } as const;
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
 
 export const TIME_ZONE = "Asia/Riyadh";
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const STALE_UPDATE_DAYS = 7;
+/** Default days without an update before the holder's manager is alerted (editable in System Settings). */
+export const DEFAULT_STALE_ALERT_DAYS = 3;
 export const DEADLINE_SOON_DAYS = 7;

@@ -13,15 +13,15 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 
 export function renderEmail(opts: { recipientName: string; title: string; body: string; link?: string | null; cta?: string }) {
   const url = opts.link ? appUrl(opts.link) : null;
-  const html = `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#111827">
+  const html = `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#171614">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0"><tr><td align="center">
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb">
-<tr><td style="background:#111318;padding:16px 24px;color:#ffffff;font-size:14px;letter-spacing:.04em"><strong style="color:#e11d2e">■</strong>&nbsp; BUSINESS PERFORMANCE · PAC | PCVC | DEX</td></tr>
+<tr><td style="background:#ffffff;padding:16px 24px;border-bottom:3px solid #ce102c;font-size:13px;letter-spacing:.04em;color:#171614"><strong style="color:#ce102c">PETRO</strong><strong style="color:#fb8606">MIN</strong> <strong>Auto Care</strong> &nbsp;·&nbsp; Business Performance · PAC | PCVC | DEX</td></tr>
 <tr><td style="padding:24px">
 <p style="margin:0 0 12px;font-size:14px">Dear ${esc(opts.recipientName)},</p>
 <h1 style="margin:0 0 12px;font-size:18px">${esc(opts.title)}</h1>
 <p style="margin:0 0 20px;font-size:14px;line-height:1.55;white-space:pre-line">${esc(opts.body)}</p>
-${url ? `<a href="${esc(url)}" style="display:inline-block;background:#c8102e;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:6px;font-size:14px">${esc(opts.cta ?? "Open in Business Performance")}</a>` : ""}
+${url ? `<a href="${esc(url)}" style="display:inline-block;background:#ce102c;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:6px;font-size:14px">${esc(opts.cta ?? "Open in Business Performance")}</a>` : ""}
 </td></tr>
 <tr><td style="padding:14px 24px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">You receive this message because of your role in an action plan. Manage notification preferences under Account settings.</td></tr>
 </table></td></tr></table></body></html>`;

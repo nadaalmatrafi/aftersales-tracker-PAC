@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { NOTIFICATION_TYPES, type NotificationType } from "./constants";
 import { renderEmail, sendEmail } from "./email";
+import { activeDelegations } from "./leave";
 
 type NotifyInput = {
   userIds: (string | null | undefined)[];
@@ -13,11 +14,22 @@ type NotifyInput = {
   /** Unique per (user, event). A repeated key never creates a second notification or email. */
   dedupeKey: string;
   excludeUserId?: string;
+  /** Internal: set when this is the delegate's copy of a notification. */
+  onBehalfOf?: string;
 };
 
 export async function notify(input: NotifyInput) {
   const ids = [...new Set(input.userIds.filter((x): x is string => !!x && x !== input.excludeUserId))];
   if (!ids.length) return;
+  // People on leave keep their own copy; their delegate receives one too.
+  if (!input.onBehalfOf) {
+    const leave = await activeDelegations();
+    for (const id of ids) {
+      const d = leave.get(id);
+      if (d && d.delegateId !== input.excludeUserId)
+        await notify({ ...input, userIds: [d.delegateId], title: `${input.title} (covering for ${d.userName})`, dedupeKey: `${input.dedupeKey}:delegate:${id}`, onBehalfOf: id });
+    }
+  }
   const [users, prefs, settings] = await Promise.all([
     db.select({ id: schema.users.id, name: schema.users.name, email: schema.users.email, active: schema.users.isActive })
       .from(schema.users).where(inArray(schema.users.id, ids)),

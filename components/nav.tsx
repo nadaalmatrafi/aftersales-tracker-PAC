@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ListChecks, CalendarDays, Target, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle } from "lucide-react";
+import { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle } from "lucide-react";
 import { cx } from "./ui";
 
-const ICONS = { LayoutDashboard, ListChecks, CalendarDays, Target, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle };
+const ICONS = { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle };
 export type NavItem = { href: string; label: string; icon: keyof typeof ICONS; badge?: number };
 
 export function NavLinks({ items, admin }: { items: NavItem[]; admin: NavItem[] }) {
@@ -20,7 +20,7 @@ export function NavLinks({ items, admin }: { items: NavItem[]; admin: NavItem[] 
           aria-current={active ? "page" : undefined}
           className={cx(
             "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
-            active ? "bg-surface-3 text-fg" : "text-fg-2 hover:bg-surface-2 hover:text-fg",
+            active ? "bg-accent-soft font-medium text-accent" : "text-fg-2 hover:bg-surface-2 hover:text-fg",
           )}
         >
           <Icon size={16} strokeWidth={1.75} className={active ? "text-accent" : "text-muted"} aria-hidden />

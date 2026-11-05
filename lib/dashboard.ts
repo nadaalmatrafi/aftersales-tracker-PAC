@@ -96,11 +96,11 @@ export function overdueAging(rows: ActionRow[]) {
 
 /** Who currently holds open work — the bottleneck view. */
 export function holders(rows: ActionRow[]) {
-  const map = new Map<string, { name: string; dept: string | null; open: number; overdue: number; blocked: number; approvals: number; oldest: string | null }>();
+  const map = new Map<string, { name: string; dept: string | null; actingFor: string | null; open: number; overdue: number; blocked: number; approvals: number; oldest: string | null }>();
   for (const a of rows) {
     if (!isOpen(a) || !a.waiting_on_name) continue;
     const k = a.waiting_on_id ?? a.waiting_on_name;
-    const e = map.get(k) ?? { name: a.waiting_on_name, dept: a.waiting_on_dept, open: 0, overdue: 0, blocked: 0, approvals: 0, oldest: null };
+    const e = map.get(k) ?? { name: a.waiting_on_name, dept: a.acting_for ? null : a.waiting_on_dept, actingFor: a.acting_for, open: 0, overdue: 0, blocked: 0, approvals: 0, oldest: null };
     e.open++;
     if (a.effective_status === "overdue") e.overdue++;
     if (a.step_blocked) e.blocked++;

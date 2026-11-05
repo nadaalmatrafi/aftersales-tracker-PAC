@@ -9,6 +9,22 @@ import { audit } from "@/lib/audit";
 import { PERMISSIONS, ROLES, NOTIFICATION_TYPES, type Permission, type Role } from "@/lib/constants";
 import { all, fail, int, ok, str, uuid, type FormState } from "@/lib/form-state";
 
+/** Usernames: letters, digits, dot, dash, underscore. A company manager leads exactly one company, one per company. */
+async function validateUser(f: ReturnType<typeof userFields>, userId: string | null): Promise<string | null> {
+  if (f.username && !/^[a-z0-9._-]{3,60}$/.test(f.username)) return "Username: 3–60 characters, letters, numbers, dot, dash or underscore.";
+  if (f.username) {
+    const taken = await db.execute(sql`SELECT 1 FROM users WHERE lower(username) = ${f.username} AND id IS DISTINCT FROM ${userId}::uuid`);
+    if (taken.rows.length) return "This username is already used by another account.";
+  }
+  if (f.role === "company_manager") {
+    if (f.orgIds.length !== 1) return "A company manager must have access to exactly one company.";
+    const other = await db.execute(sql`SELECT u.name FROM users u JOIN user_organizations uo ON uo.user_id = u.id
+      WHERE u.role = 'company_manager' AND u.is_active AND uo.organization_id = ${f.orgIds[0]} AND u.id IS DISTINCT FROM ${userId}::uuid LIMIT 1`);
+    if (other.rows.length) return `This company already has a company manager (${(other.rows[0] as { name: string }).name}).`;
+  }
+  return null;
+}
+
 async function owner(): Promise<CurrentUser> {
   const u = await actionUser();
   if (u.role !== "system_owner") throw new Error("forbidden");
@@ -30,6 +46,7 @@ function userFields(fd: FormData) {
   return {
     name: str(fd, "name", 120),
     email: str(fd, "email", 200)?.toLowerCase() ?? null,
+    username: str(fd, "username", 60)?.toLowerCase() ?? null,
     title: str(fd, "title", 120),
     role: role && (ROLES as readonly string[]).includes(role) ? role : null,
     departmentId: int(fd, "departmentId"),
@@ -45,6 +62,8 @@ export async function createUser(_: FormState, fd: FormData): Promise<FormState>
     const f = userFields(fd);
     if (!f.name || !f.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email)) return fail("Name and a valid email are required.");
     if (!f.role) return fail("Choose a role.");
+    const invalid = await validateUser(f, null);
+    if (invalid) return fail(invalid);
     const pw = String(fd.get("password") ?? "");
     const problem = passwordProblem(pw);
     if (problem) return fail(`Temporary password: ${problem}`);
@@ -53,7 +72,7 @@ export async function createUser(_: FormState, fd: FormData): Promise<FormState>
     await db.transaction(async (tx) => {
       const [nu] = await tx
         .insert(schema.users)
-        .values({ name: f.name!, email: f.email!, title: f.title, role: f.role!, departmentId: f.departmentId, managerId: f.managerId, externalId: f.externalId, passwordHash: hashPassword(pw), mustChangePassword: true })
+        .values({ name: f.name!, email: f.email!, username: f.username, title: f.title, role: f.role!, departmentId: f.departmentId, managerId: f.managerId, externalId: f.externalId, passwordHash: hashPassword(pw), mustChangePassword: true })
         .returning({ id: schema.users.id });
       if (f.orgIds.length) await tx.insert(schema.userOrganizations).values(f.orgIds.map((o) => ({ userId: nu.id, organizationId: o })));
       if (f.permissions.length) await tx.insert(schema.userPermissions).values(f.permissions.map((p) => ({ userId: nu.id, permission: p, grantedBy: u.id })));
@@ -72,10 +91,12 @@ export async function updateUser(_: FormState, fd: FormData): Promise<FormState>
     if (!f.name || !f.email || !f.role) return fail("Name, email and role are required.");
     if (id === u.id && f.role !== "system_owner") return fail("You cannot remove your own System Owner role.");
     if (f.managerId === id) return fail("A user cannot report to themselves.");
+    const invalid = await validateUser(f, id);
+    if (invalid) return fail(invalid);
     const [before] = await db.select().from(schema.users).where(eq(schema.users.id, id));
     if (!before) return fail("User not found.");
     await db.transaction(async (tx) => {
-      await tx.update(schema.users).set({ name: f.name!, email: f.email!, title: f.title, role: f.role!, departmentId: f.departmentId, managerId: f.managerId, externalId: f.externalId }).where(eq(schema.users.id, id));
+      await tx.update(schema.users).set({ name: f.name!, email: f.email!, username: f.username, title: f.title, role: f.role!, departmentId: f.departmentId, managerId: f.managerId, externalId: f.externalId }).where(eq(schema.users.id, id));
       await tx.delete(schema.userOrganizations).where(eq(schema.userOrganizations.userId, id));
       if (f.orgIds.length) await tx.insert(schema.userOrganizations).values(f.orgIds.map((o) => ({ userId: id, organizationId: o })));
       await tx.delete(schema.userPermissions).where(eq(schema.userPermissions.userId, id));
@@ -165,5 +186,16 @@ export async function restoreAction(_: FormState, fd: FormData): Promise<FormSta
     revalidatePath("/admin/settings");
     revalidatePath("/actions");
     return ok("Action plan restored.");
+  });
+}
+
+export async function saveStaleDays(_: FormState, fd: FormData): Promise<FormState> {
+  return guard(async (u) => {
+    const days = Number(fd.get("days"));
+    if (!Number.isInteger(days) || days < 1 || days > 60) return fail("Enter a number of days between 1 and 60.");
+    await db.insert(schema.systemSettings).values({ key: "stale_alert_days", value: days, updatedBy: u.id }).onConflictDoUpdate({ target: schema.systemSettings.key, set: { value: days, updatedBy: u.id, updatedAt: new Date() } });
+    await audit(u.id, "settings", "stale_alert_days", "edit", { days });
+    revalidatePath("/admin/settings");
+    return ok(`Managers are alerted after ${days} day(s) without an update.`);
   });
 }

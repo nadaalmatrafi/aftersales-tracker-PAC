@@ -47,7 +47,7 @@ export default async function UsersAdmin() {
               <div className="space-y-4 border-t border-line p-4">
                 <ActionForm action={updateUser} resetOnSuccess={false}>
                   <input type="hidden" name="userId" value={String(x.id)} />
-                  <UserFields lk={lk} selfId={String(x.id)} d={{ name: String(x.name), email: String(x.email), title: x.title as string, role: String(x.role), departmentId: x.department_id as number, managerId: x.manager_id as string, externalId: x.external_id as string, orgIds: x.org_ids as number[], permissions: x.perms as string[] }} />
+                  <UserFields lk={lk} selfId={String(x.id)} d={{ name: String(x.name), email: String(x.email), username: x.username as string, title: x.title as string, role: String(x.role), departmentId: x.department_id as number, managerId: x.manager_id as string, externalId: x.external_id as string, orgIds: x.org_ids as number[], permissions: x.perms as string[] }} />
                   <div className="mt-3"><SubmitButton className="btn btn-secondary">Save user</SubmitButton></div>
                 </ActionForm>
                 <div className="flex flex-wrap items-end gap-4 border-t border-line pt-4">

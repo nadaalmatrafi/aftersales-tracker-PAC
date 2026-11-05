@@ -29,7 +29,7 @@ export function ActionFields({ lk, d = {}, withOwner, canConfidential }: { lk: L
         <div className="flex flex-wrap gap-4">
           {lk.orgs.map((o) => (
             <label key={o.id} className="inline-flex items-center gap-2 text-sm">
-              <input type="checkbox" name="orgIds" value={o.id} defaultChecked={d.orgIds?.includes(o.id)} className="accent-[#e2242f]" />
+              <input type="checkbox" name="orgIds" value={o.id} defaultChecked={d.orgIds?.includes(o.id)} className="accent-[#ce102c]" />
               <span><strong className="font-semibold">{o.code}</strong> <span className="text-muted">{o.name}</span></span>
             </label>
           ))}
@@ -92,7 +92,7 @@ export function ActionFields({ lk, d = {}, withOwner, canConfidential }: { lk: L
       </Field>
       {canConfidential && (
         <label className="inline-flex items-center gap-2 text-sm md:col-span-2">
-          <input type="checkbox" name="isConfidential" defaultChecked={d.isConfidential} className="accent-[#e2242f]" />
+          <input type="checkbox" name="isConfidential" defaultChecked={d.isConfidential} className="accent-[#ce102c]" />
           Confidential — visible only to executives and directly involved people
         </label>
       )}

@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
-import { requireUser, canCreateActions, canExport } from "@/lib/auth";
-import { listActions, lookups, parseFilters } from "@/lib/queries";
-import { meetingOptions } from "@/lib/meetings";
+import { requireUser, canCreateActions, canExport, seesAllActions } from "@/lib/auth";
+import { listActions, lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar } from "@/components/filter-bar";
+import { FilterBar, peopleLabelFor } from "@/components/filter-bar";
 import { PageHeader } from "@/components/ui";
 
 export const metadata = { title: "Action Plans" };
@@ -13,8 +12,9 @@ export default async function ActionsPage({ searchParams }: { searchParams: Prom
   const u = await requireUser();
   const sp = await searchParams;
   const f = parseFilters(sp);
-  const [rows, lk, meetings] = await Promise.all([listActions(u, f), lookups(), meetingOptions(u)]);
-  const qs = new URLSearchParams(Object.entries(sp).filter(([, v]) => typeof v === "string" && v) as [string, string][]).toString();
+  delete f.q; // search was replaced by the Status / Company / People filters
+  const [rows, lk, people] = await Promise.all([listActions(u, f), lookups(), peopleOptions(u)]);
+  const qs = new URLSearchParams(Object.entries(sp).filter(([k, v]) => typeof v === "string" && v && k !== "q") as [string, string][]).toString();
   return (
     <>
       <PageHeader
@@ -35,7 +35,7 @@ export default async function ActionsPage({ searchParams }: { searchParams: Prom
         }
       />
       {sp.deleted && <p role="status" className="mb-4 text-sm text-ok">Action plan deleted. It remains recoverable by the System Owner.</p>}
-      <FilterBar f={f} lk={lk} meetings={meetings} action="/actions" />
+      <FilterBar variant="actions" f={f} lk={lk} people={people} peopleLabel={peopleLabelFor(u.role, u.role === "system_owner" || (seesAllActions(u) && u.role !== "ceo"))} action="/actions" />
       <div className="card">
         <ActionTable rows={rows} />
       </div>

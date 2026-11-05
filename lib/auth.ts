@@ -21,6 +21,8 @@ export type CurrentUser = {
   mustChangePassword: boolean;
   permissions: Set<Permission>;
   orgIds: number[]; // explicit organization scope (executives see all regardless)
+  /** Users currently on leave who named this user as their delegate. */
+  actingFor: string[];
 };
 
 const sha256 = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
@@ -74,12 +76,14 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     .limit(1);
   const u = rows[0]?.u;
   if (!u || !u.isActive) return null;
-  const [perms, orgs] = await Promise.all([
+  const [perms, orgs, delegations] = await Promise.all([
     db.select({ p: schema.userPermissions.permission }).from(schema.userPermissions).where(eq(schema.userPermissions.userId, u.id)),
     db
       .select({ o: schema.userOrganizations.organizationId })
       .from(schema.userOrganizations)
       .where(eq(schema.userOrganizations.userId, u.id)),
+    db.execute(sql`SELECT user_id FROM leave_periods WHERE delegate_id = ${u.id} AND cancelled_at IS NULL
+                   AND (now() AT TIME ZONE 'Asia/Riyadh')::date BETWEEN start_date AND end_date`),
   ]);
   const orgIds = orgs.map((r) => r.o);
   // A user whose department belongs to an organization is always scoped to it.
@@ -98,6 +102,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     mustChangePassword: u.mustChangePassword,
     permissions: new Set(perms.map((p) => p.p as Permission)),
     orgIds,
+    actingFor: delegations.rows.map((r) => (r as { user_id: string }).user_id),
   };
 });
 
@@ -129,17 +134,21 @@ export function seesAllActions(u: CurrentUser) {
 export function canSeeConfidential(u: CurrentUser) {
   return isExecutive(u) || u.permissions.has("view_confidential");
 }
-export function canManageMeetings(u: CurrentUser) {
-  return isExecutive(u) || u.permissions.has("manage_meetings");
+export function isCompanyManager(u: CurrentUser) {
+  return u.role === "company_manager";
+}
+/** The user plus everyone they are currently covering for. */
+export function selfAndDelegators(u: CurrentUser) {
+  return [u.id, ...u.actingFor];
 }
 export function canManageObjectives(u: CurrentUser) {
-  return isExecutive(u) || u.role === "director" || u.permissions.has("manage_objectives");
+  return isExecutive(u) || isCompanyManager(u) || u.role === "director" || u.permissions.has("manage_objectives");
 }
 export function canCreateActions(u: CurrentUser) {
-  return isExecutive(u) || u.role === "director" || u.permissions.has("assign_any");
+  return isExecutive(u) || isCompanyManager(u) || u.role === "director" || u.permissions.has("assign_any");
 }
 export function canExport(u: CurrentUser) {
-  return isExecutive(u) || u.role === "director" || u.permissions.has("export_reports");
+  return isExecutive(u) || isCompanyManager(u) || u.role === "director" || u.permissions.has("export_reports");
 }
 export function requireRole(u: CurrentUser, roles: Role[]) {
   if (!roles.includes(u.role)) throw new AuthError("You are not authorized to perform this action.");

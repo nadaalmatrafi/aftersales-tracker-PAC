@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { sql } from "drizzle-orm";
 import { Menu, LogOut } from "lucide-react";
 import { db } from "@/db";
@@ -13,10 +14,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const u = await requireUser({ allowPasswordChange: true });
   const unread = (await db.execute(sql`SELECT count(*)::int AS n FROM notifications WHERE user_id = ${u.id} AND read_at IS NULL`)).rows[0] as { n: number };
   const items: NavItem[] = [
-    { href: "/", label: "Executive Dashboard", icon: "LayoutDashboard" },
+    { href: "/", label: "My Work", icon: "Inbox" },
+    { href: "/overview", label: "Overview", icon: "LayoutDashboard" },
     { href: "/actions", label: "Action Plans", icon: "ListChecks" },
-    { href: "/meetings", label: "CEO Meetings", icon: "CalendarDays" },
-    { href: "/objectives", label: "30 / 60 / 90 Objectives", icon: "Target" },
     { href: "/reports", label: "Reports", icon: "FileBarChart" },
     { href: "/notifications", label: "Notifications", icon: "Bell", badge: unread.n },
     { href: "/account", label: "Account", icon: "UserCircle" },
@@ -25,7 +25,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (u.role === "system_owner") {
     admin.push(
       { href: "/admin/users", label: "Users & Permissions", icon: "Users" },
-      { href: "/admin/organizations", label: "Organizations", icon: "Building2" },
+      { href: "/admin/organizations", label: "Companies", icon: "Building2" },
       { href: "/admin/audit", label: "Audit Log", icon: "ScrollText" },
       { href: "/admin/settings", label: "System Settings", icon: "Settings" },
     );
@@ -35,12 +35,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const sidebar = (
     <>
-      <Link href="/" className="mb-6 flex items-center gap-2.5 px-2.5">
-        <span className="h-5 w-1 rounded bg-accent" aria-hidden />
-        <span className="leading-tight">
-          <span className="block text-[13px] font-semibold tracking-tight">Business Performance</span>
-          <span className="block text-[10px] tracking-[0.2em] text-muted">PAC · PCVC · DEX</span>
-        </span>
+      <Link href="/" className="mb-6 block px-2.5" aria-label="Petromin Auto Care — Business Performance home">
+        <Image src="/brand/petromin-auto-care.png" alt="Petromin Auto Care" width={734} height={192} priority className="h-auto w-full max-w-[190px]" />
+        <span className="mt-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-2">Business Performance</span>
+        <span className="block text-[10px] tracking-[0.2em] text-muted">PAC · PCVC · DEX</span>
       </Link>
       <NavLinks items={items} admin={admin} />
       <div className="mt-auto border-t border-line pt-4">
@@ -62,7 +60,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </div>
       <details className="no-print group border-b border-line bg-surface lg:hidden">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3">
-          <span className="flex items-center gap-2 text-sm font-semibold"><span className="h-4 w-1 rounded bg-accent" />Business Performance</span>
+          <Image src="/brand/petromin-auto-care.png" alt="Petromin Auto Care" width={734} height={192} className="h-8 w-auto" />
           <Menu size={18} aria-label="Menu" />
         </summary>
         <div className="flex flex-col px-3 pb-4">{sidebar}</div>

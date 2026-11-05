@@ -42,7 +42,6 @@ const INITIAL_ACTIONS = [
 const ABDULLAH_PERMISSIONS = [
   "view_all_actions",
   "assign_any",
-  "manage_meetings",
   "manage_objectives",
   "approve_completion",
   "export_reports",

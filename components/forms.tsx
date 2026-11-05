@@ -41,7 +41,7 @@ export function ActionForm({
     <form ref={ref} action={formAction} className={className}>
       {children}
       {state.error && (
-        <p role="alert" className="mt-2 text-sm text-[#ff7b82]">
+        <p role="alert" className="mt-2 text-sm text-accent">
           {state.error}
         </p>
       )}

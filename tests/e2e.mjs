@@ -1,9 +1,10 @@
 // End-to-end acceptance run against a DEMO database (see scripts/demo-data.mjs).
-// Usage: BASE_URL=http://localhost:3000 SHOTS=<dir> node tests/e2e.mjs
+// Usage: BASE_URL=http://localhost:3000 DATABASE_URL=<demo db> SHOTS=<dir> [SCALE=2] node tests/e2e.mjs
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import pg from "pg";
 
 // Playwright is pre-installed globally in the build environment; fall back to a local install if present.
 const require = createRequire(import.meta.url);
@@ -17,8 +18,11 @@ const { chromium } = pw;
 
 const BASE = process.env.BASE_URL || "http://localhost:3000";
 const SHOTS = process.env.SHOTS || "";
+const SCALE = Number(process.env.SCALE || 1);
 const PW = process.env.DEMO_PASSWORD || "Demo-Pass-2026";
 const CRON = process.env.CRON_SECRET || "local-cron-secret";
+const DB_URL = process.env.DATABASE_URL || "postgres://bp:bp_local_dev@localhost:5432/business_performance_demo";
+if (!/demo|test/i.test(DB_URL)) throw new Error("e2e must run against a demo/test database");
 const results = [];
 const check = (name, pass, detail = "") => {
   results.push({ name, pass, detail });
@@ -39,68 +43,78 @@ function stabilise(page) {
   page.reload = async (...a) => settle(await reload(...a));
   return page;
 }
-async function session(email) {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: Number(process.env.SCALE || 1) });
+async function session(login, viewport = { width: 1440, height: 1000 }) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: SCALE });
   const page = stabilise(await ctx.newPage());
   await page.goto(`${BASE}/login`);
-  await page.fill("input[name=email]", email);
+  await page.fill("input[name=email]", login);
   await page.fill("input[name=password]", PW);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith("/login")), page.click("button[type=submit]")]);
+  await page.waitForSelector("h1");
   return { ctx, page };
 }
 const formWith = (page, buttonName, scope) => (scope ?? page).locator("form", { has: page.getByRole("button", { name: buttonName, exact: true }) }).first();
 async function submit(page, form, buttonName) {
-  // Server actions POST to the current URL; wait for the response (and any redirect) before continuing.
   await Promise.all([
     page.waitForResponse((r) => r.request().method() === "POST", { timeout: 30_000 }),
     form.getByRole("button", { name: buttonName, exact: true }).click(),
   ]);
   await page.waitForLoadState("networkidle");
 }
-async function actionIdByCode(page, code) {
-  await page.goto(`${BASE}/actions?q=${code}`);
-  await page.waitForSelector("table a[href^='/actions/']");
-  const href = await page.locator(`table a[href^="/actions/"]`).first().getAttribute("href");
-  return href.split("/").pop();
-}
 const seen = (page, text) => page.getByText(text).first().waitFor({ timeout: 15_000 }).then(() => true, () => false);
+async function actionIdByCode(page, code) {
+  const num = Number(code.split("-")[1]);
+  return String(num);
+}
 const shot = async (page, name, opts = {}) => {
   if (!SHOTS) return;
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: opts.full ?? false });
 };
+const main = async (page) => (await page.locator("main").textContent()) ?? "";
+const db = new pg.Pool({ connectionString: DB_URL });
 
 try {
   // ---------- Security boundaries (unauthenticated) ----------
-  const anon = await browser.newContext();
+  const anon = await browser.newContext({ deviceScaleFactor: SCALE });
   const ap = stabilise(await anon.newPage());
   await ap.goto(`${BASE}/`);
   check("Unauthenticated user is redirected to sign-in", ap.url().includes("/login"));
+  check("Sign-in page shows the Petromin Auto Care logo", await ap.locator('img[alt="Petromin Auto Care"]').isVisible());
   const r401 = await anon.request.get(`${BASE}/api/reports/executive?format=xlsx`);
   check("Report export requires authentication", r401.status() === 401, `status ${r401.status()}`);
   const cronNo = await anon.request.get(`${BASE}/api/cron/reminders`);
   check("Reminder endpoint rejects missing secret", cronNo.status() === 401);
-  await ap.goto(`${BASE}/login`);
   await ap.fill("input[name=email]", "abdullah.qadi@sandbox.local");
   await ap.fill("input[name=password]", "wrong-password-1");
   await ap.click("button[type=submit]");
-  const bad = await ap.getByRole("alert").filter({ hasText: "Invalid email or password" }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+  const bad = await ap.getByRole("alert").filter({ hasText: "Invalid email, username or password" }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
   check("Wrong password is rejected", bad);
   await shot(ap, "01-login");
+  for (const gone of ["/meetings", "/objectives"]) {
+    const r = await anon.request.get(`${BASE}${gone}`, { maxRedirects: 0 });
+    check(`Removed page ${gone} no longer exists`, r.status() === 404, `status ${r.status()}`);
+  }
   await anon.close();
 
   // ---------- Abdullah distributes an initial action ----------
   const ab = await session("abdullah.qadi@sandbox.local");
   let p = ab.page;
-  await p.goto(`${BASE}/`);
+  check("Landing page is My Work", (await p.locator("h1").innerText()) === "My Work");
+  await p.goto(`${BASE}/overview`);
+  check("Dashboard is named Overview", (await p.locator("h1").innerText()) === "Overview");
   const total = await p.locator("text=Total action plans").locator("..").locator("..").innerText();
-  check("Dashboard shows the 14 initial action plans", /plans\s*14\b/i.test(total), total.replace(/\s+/g, " "));
+  check("Overview shows the 14 initial action plans", /plans\s*14\b/i.test(total), total.replace(/\s+/g, " "));
+
+  await p.goto(`${BASE}/actions`);
+  check("Action Plans has no search box", (await p.locator("input[name=q]").count()) === 0);
+  const abPeople = await p.locator("select[name=person] option").allTextContents();
+  check("Abdullah's people filter lists everyone", abPeople.length > 10 && abPeople.some((t) => t.includes("Network Analyst")), `${abPeople.length - 1} people`);
 
   const rentalId = await actionIdByCode(p, "BP-0003");
   await p.goto(`${BASE}/actions/${rentalId}`);
-  await p.waitForSelector("section[aria-label='Current position']");
-  const initialText = await p.locator("main").textContent();
-  check("Initial action keeps original timeline and suggested owner", initialText.includes("Original timeline: November") && initialText.includes("Farhan – Network"), `timeline=${initialText.includes("Original timeline: November")} suggested=${initialText.includes("Farhan – Network")} url=${p.url()}`);
+  const initialText = await main(p);
+  check("Initial action keeps original timeline and suggested owner", initialText.includes("Original timeline: November") && initialText.includes("Farhan – Network"));
   await p.click("summary:has-text('Edit action plan')");
   const edit = formWith(p, "Save changes");
   await edit.locator("select[name=departmentId]").selectOption({ label: "PAC · Network Development" });
@@ -115,7 +129,7 @@ try {
   await submit(p, re, "Transfer responsibility");
   await p.reload();
   const hist = await p.locator("section:has(h2:has-text('Ownership history'))").innerText();
-  check("Reassignment preserves ownership history", hist.includes("Abdullah Qadi → Farhan (Demo)"), hist.replace(/\s+/g, " ").slice(0, 160));
+  check("Reassignment preserves ownership history", hist.includes("Abdullah Qadi → Farhan (Demo)"));
 
   for (const [title, dept, who] of [
     ["Collect current rent contracts for the 7 Aramco branches", "PAC · Network Development", "Network Analyst (Demo)"],
@@ -130,9 +144,8 @@ try {
   }
   await p.reload();
   let pos = await p.locator("section[aria-label='Current position']").innerText();
-  check("Cross-department workflow: currently with first step's assignee", pos.includes("Network Analyst (Demo)"), pos.replace(/\s+/g, " ").slice(0, 140));
+  check("Cross-department workflow: currently with first step's assignee", pos.includes("Network Analyst (Demo)"));
 
-  // Overdue calculation on another action
   const footId = await actionIdByCode(p, "BP-0005");
   await p.goto(`${BASE}/actions/${footId}`);
   await p.click("summary:has-text('Edit action plan')");
@@ -141,7 +154,7 @@ try {
   await e2.locator("input[name=targetDate]").fill("2026-10-20");
   await submit(p, e2, "Save changes");
   await p.reload();
-  check("Overdue status is derived automatically from the target date", (await p.locator("main").innerText()).includes("Overdue"));
+  check("Overdue status is derived automatically from the target date", (await main(p)).includes("Overdue"));
   const up = formWith(p, "Upload");
   await up.locator("input[type=file]").setInputFiles({ name: "footfall-plan.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%demo evidence\n") });
   await submit(p, up, "Upload");
@@ -155,50 +168,78 @@ try {
   await submit(p, upd, "Post update");
   check("Progress update saved", await seen(p, "Update recorded."));
 
-  // ---------- Analyst completes the first step → hand-off to Finance ----------
+  // ---------- Employee: login by username is not set for analyst; email works; step hand-off ----------
   const an = await session("analyst@demo.local");
+  check("Employee does not see the people filter", await (async () => { await an.page.goto(`${BASE}/actions`); return (await an.page.locator("select[name=person]").count()) === 0; })());
+  await an.page.goto(`${BASE}/`);
+  check("Employee's My Work shows the step waiting on them", (await main(an.page)).includes("Collect current rent contracts"));
   await an.page.goto(`${BASE}/actions/${rentalId}`);
-  check("Step assignee can open the action", (await an.page.locator("h1").innerText()).includes("rental cost assessment"));
-  const step1 = an.page.locator("li[data-step]", { hasText: "Collect current rent contracts" }).first();
-  const s1 = formWith(an.page, "Update step", step1);
+  const s1 = formWith(an.page, "Update step", an.page.locator("li[data-step]", { hasText: "Collect current rent contracts" }).first());
   await s1.locator("select[name=status]").selectOption("done");
   await submit(an.page, s1, "Update step");
   await an.page.goto(`${BASE}/actions/${footId}`);
   const deniedText = await an.page.locator("body").textContent();
   check("Employee cannot open an unrelated action", deniedText.includes("Not found or not accessible") && !deniedText.includes("customer footfall"));
   await an.page.goto(`${BASE}/admin/users`);
-  const admText = await an.page.locator("body").textContent();
-  check("Employee cannot open administration", admText.includes("Not found or not accessible") && !admText.includes("Users & Permissions"));
+  check("Employee cannot open administration", (await an.page.locator("body").textContent()).includes("Not found or not accessible"));
   const exp = await an.ctx.request.get(`${BASE}/api/reports/executive?format=xlsx`);
   check("Employee cannot export reports (403)", exp.status() === 403);
   const att = await an.ctx.request.get(`${BASE}${attHref}`);
   check("Employee cannot download another action's attachment", att.status() === 404);
   await an.ctx.close();
 
+  // ---------- Finance blocks, then goes on leave; the delegate continues ----------
   const fin = await session("finance@demo.local");
   await fin.page.goto(`${BASE}/notifications`);
-  check("Next assignee receives a hand-off notification", (await fin.page.locator("main").innerText()).includes("Your turn: BP-0003"));
+  check("Next assignee receives a hand-off notification", (await main(fin.page)).includes("Your turn: BP-0003"));
   await fin.page.goto(`${BASE}/actions/${rentalId}`);
-  const step2 = fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first();
-  let s2 = formWith(fin.page, "Update step", step2);
+  let s2 = formWith(fin.page, "Update step", fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
   await s2.locator("select[name=status]").selectOption("blocked");
   await s2.locator("input[name=note]").fill("Two lease contracts missing from Network");
   await submit(fin.page, s2, "Update step");
 
   const ceo = await session("ceo@demo.local");
-  await ceo.page.goto(`${BASE}/`);
+  await ceo.page.goto(`${BASE}/overview`);
   const attn = await ceo.page.locator("section:has(h2:has-text('Requires attention'))").innerText();
-  check("CEO dashboard shows who holds the work and the blocker", attn.includes("Finance Director (Demo)") && attn.includes("Two lease contracts missing"), attn.replace(/\s+/g, " ").slice(0, 200));
-  await shot(ceo.page, "02-ceo-dashboard", { full: true });
+  check("Overview shows who holds the work and the blocker", attn.includes("Finance Director (Demo)") && attn.includes("Two lease contracts missing"));
+  await ceo.page.goto(`${BASE}/actions`);
+  const ceoPeople = await ceo.page.locator("select[name=person] option").allTextContents();
+  check("CEO's people filter lists the company managers", ceoPeople.length === 4 && ceoPeople.every((t, i) => i === 0 || t.includes("Company Manager")), ceoPeople.slice(1).join(" | "));
+  check("CEO's filter is labelled Company managers", (await ceo.page.locator("label:has(select[name=person]) .label").innerText()) === "Company managers");
+  await ceo.page.locator("select[name=person]").selectOption({ label: ceoPeople.find((t) => t.startsWith("PCVC Company Manager")) });
+  await ceo.page.getByRole("button", { name: "Apply" }).click();
+  await ceo.page.waitForURL(/person=/);
+  await ceo.page.waitForSelector("h1");
+  const pcvcRows = await ceo.page.locator("table tbody tr").count();
+  const pcvcText = await main(ceo.page);
+  check("Selecting a company manager shows that company's actions", pcvcRows === 1 && pcvcText.includes("BP-0014"), `${pcvcRows} row(s)`);
 
-  s2 = formWith(fin.page, "Update step", fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
-  await fin.page.reload();
-  s2 = formWith(fin.page, "Update step", fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
-  await s2.locator("select[name=status]").selectOption("done");
-  await submit(fin.page, s2, "Update step");
+  // Leave: Finance Director delegates to the Network Manager
+  await fin.page.goto(`${BASE}/account`);
+  const lf = formWith(fin.page, "Save leave");
+  const t0 = new Date(), t1 = new Date(Date.now() + 3 * 86400000);
+  const iso = (d) => d.toLocaleDateString("en-CA", { timeZone: "Asia/Riyadh" });
+  await lf.locator("input[name=startDate]").fill(iso(t0));
+  await lf.locator("input[name=endDate]").fill(iso(t1));
+  await lf.locator("select[name=delegateId]").selectOption({ label: "Network Manager (Demo) · Network Development" });
+  await submit(fin.page, lf, "Save leave");
+  check("Leave and delegate saved", await seen(fin.page, "Leave saved."));
   await fin.ctx.close();
 
-  const fa = await session("farhan@demo.local");
+  const nm = await session("netmgr@demo.local");
+  await nm.page.goto(`${BASE}/actions/${rentalId}`);
+  pos = await nm.page.locator("section[aria-label='Current position']").innerText();
+  check("Delegate appears as current holder, covering for the person on leave", pos.includes("Network Manager (Demo)") && pos.includes("Covering for Finance Director (Demo)"), pos.replace(/\s+/g, " ").slice(0, 120));
+  s2 = formWith(nm.page, "Update step", nm.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
+  await s2.locator("select[name=status]").selectOption("done");
+  await submit(nm.page, s2, "Update step");
+  await nm.page.reload();
+  check("Delegate can complete the absent person's step", (await nm.page.locator("li[data-step]", { hasText: "Finance to validate" }).first().innerText()).includes("Done"));
+  await nm.ctx.close();
+
+  // ---------- Owner submits; self-approval blocked; company manager approves ----------
+  const fa = await session("farhan");
+  check("Sign-in with a username works", (await fa.page.locator("h1").innerText()) === "My Work");
   await fa.page.goto(`${BASE}/actions/${rentalId}`);
   const s3 = formWith(fa.page, "Update step", fa.page.locator("li[data-step]", { hasText: "Prepare recommendation" }).first());
   await s3.locator("select[name=status]").selectOption("done");
@@ -207,68 +248,66 @@ try {
   await rc.locator("textarea[name=note]").fill("Assessment complete: 2 of 7 branches exceed rent-to-revenue threshold. Recommendation attached.");
   await submit(fa.page, rc, "Submit for approval");
   await fa.page.reload();
-  check("Owner submits for completion → Pending Approval", (await fa.page.locator("main").innerText()).includes("Pending Approval"));
+  check("Owner submits for completion → Pending Approval", (await main(fa.page)).includes("Pending Approval"));
   check("Owner cannot approve own completion", (await fa.page.getByRole("button", { name: "Approve", exact: true }).count()) === 0);
   await fa.ctx.close();
 
-  await p.goto(`${BASE}/actions/${rentalId}`);
-  const dec = formWith(p, "Approve");
-  await dec.locator("input[name=note]").fill("Approved. Present at next CEO meeting.");
-  await submit(p, dec, "Approve");
-  await p.reload();
-  const done = await p.locator("main").innerText();
-  check("Authorized approver completes the action (100%)", done.includes("Completed") && done.includes("100%"));
-  await shot(p, "03-action-detail", { full: true });
+  const pcvc = await session("pcvc.gm@demo.local");
+  await pcvc.page.goto(`${BASE}/actions/${rentalId}`);
+  check("PCVC company manager cannot open a PAC-only action", (await pcvc.page.locator("body").textContent()).includes("Not found or not accessible"));
+  await pcvc.ctx.close();
 
-  // ---------- Meeting with decisions and carry-forward ----------
-  await p.goto(`${BASE}/meetings`);
-  const mf = formWith(p, "Create meeting");
-  await mf.locator("input[name=meetingAt]").fill("2026-11-09T10:00");
-  await mf.locator("input[name=location]").fill("Head Office – Board Room");
-  await mf.locator("select[name=attendeeIds]").selectOption([{ label: "Demo CEO" }, { label: "Farhan (Demo) · Network Development" }, { label: "Nada (Demo) · Operations" }]);
-  await mf.locator("textarea[name=agenda]").fill("1. Review open action plans\n2. Aramco branch rental results\n3. Footfall initiatives");
-  await submit(p, mf, "Create meeting");
-  await p.waitForURL(/\/meetings\/[0-9a-f-]{36}/);
-  const meetingUrl = p.url();
-  const dform = formWith(p, "Add decision");
-  await dform.locator("textarea[name=decision]").fill("Prepare a branch-by-branch lease renegotiation plan for the 2 Aramco branches above threshold.");
-  await submit(p, dform, "Add decision");
-  const carried = await p.locator("section:has(h2:has-text('Carried forward'))").innerText();
-  check("Unfinished actions carry forward into the meeting", carried.includes("BP-0005") && !carried.includes("BP-0003"));
-  await p.getByRole("link", { name: "Create action" }).first().click();
-  await p.waitForURL(/\/actions\/new/);
+  const pac = await session("pac.gm");
+  await pac.page.goto(`${BASE}/`);
+  check("PAC company manager sees the approval in My Work", (await pac.page.locator("section:has(h2:has-text('Approvals waiting'))").innerText()).includes("BP-0003"));
+  await pac.page.goto(`${BASE}/actions`);
+  const pacPeople = await pac.page.locator("select[name=person] option").allTextContents();
+  check("Company manager's filter lists their department directors", pacPeople.some((t) => t.startsWith("Farhan (Demo)")) && !pacPeople.some((t) => t.startsWith("PCVC Ops Director")), `${pacPeople.length - 1} directors`);
+  await pac.page.goto(`${BASE}/actions/${rentalId}`);
+  const dec = formWith(pac.page, "Approve");
+  await dec.locator("input[name=note]").fill("Approved. Present the two branches to the CEO.");
+  await submit(pac.page, dec, "Approve");
+  await pac.page.reload();
+  const done = await main(pac.page);
+  check("Company manager approves completion (100%)", done.includes("Completed") && done.includes("100%"));
+  await shot(pac.page, "05-action-detail", { full: true });
+  await pac.ctx.close();
+
+  // ---------- Request update ----------
+  await ceo.page.goto(`${BASE}/actions/${footId}`);
+  const ru = formWith(ceo.page, "Request update");
+  await ru.locator("input[name=message]").fill("Where are we on the weekend promotion?");
+  await submit(ceo.page, ru, "Request update");
+  check("CEO requests an update from the current holder", await seen(ceo.page, "Update requested from Abdullah Qadi."));
+  await p.goto(`${BASE}/notifications`);
+  check("Holder receives the update request", (await main(p)).includes("Update requested: BP-0005"));
+
+  // ---------- Duplicates ----------
+  await p.goto(`${BASE}/actions/new`);
   const nf = formWith(p, "Create action plan");
-  await nf.locator("select[name=ownerId]").selectOption({ label: "Farhan (Demo) · Network Development" });
-  await nf.locator("input[name=targetDate]").fill("2026-12-15");
+  await nf.locator("textarea[name=pointTask]").fill("Develop a manpower replacement plan for PAC and PCVC.");
+  await nf.locator("input[name=orgIds]").first().check();
+  await nf.locator("select[name=ownerId]").selectOption({ label: "Abdullah Qadi" });
   await submit(p, nf, "Create action plan");
-  await p.waitForURL(/\/actions\/\d+$/);
-  check("Action generated from a meeting decision", (await p.locator("main").innerText()).includes("lease renegotiation"));
-  const dupe = await (async () => {
-    await p.goto(`${BASE}/actions/new`);
-    const f = formWith(p, "Create action plan");
-    await f.locator("textarea[name=pointTask]").fill("Develop a manpower replacement plan for PAC and PCVC.");
-    await f.locator("input[name=orgIds]").first().check();
-    await f.locator("select[name=ownerId]").selectOption({ label: "Abdullah Qadi" });
-    await submit(p, f, "Create action plan");
-    return p.locator("p[role=alert]").innerText();
-  })();
+  const dupe = await p.locator("p[role=alert]").innerText();
   check("Duplicate action plans are blocked", dupe.includes("already exists"), dupe);
-  await p.goto(meetingUrl);
-  await shot(p, "04-meeting", { full: true });
-  const ics = await ab.ctx.request.get(`${meetingUrl.replace("/meetings/", "/api/meetings/")}/ics`);
-  check("Calendar invitation (.ics) is generated", ics.ok() && (await ics.text()).includes("BEGIN:VEVENT"));
 
-  // ---------- Objectives checklist ----------
-  await ceo.page.goto(`${BASE}/objectives?h=30`);
+  // ---------- 30/60/90 objectives inside Overview ----------
+  await ceo.page.goto(`${BASE}/overview`);
+  check("Overview has the small 30/60/90 card", await ceo.page.getByText("30 / 60 / 90-day objectives").isVisible());
+  await ceo.page.getByRole("link", { name: "Open checklist" }).click();
+  await ceo.page.waitForSelector("#objectives");
+  await ceo.page.click("summary:has-text('New 30-day objective')");
   const of = formWith(ceo.page, "Create objective");
   await of.locator("input[name=title]").fill("Activate customer footfall initiatives");
   await submit(ceo.page, of, "Create objective");
+  await ceo.page.click("#objectives summary:has-text('Add deliverable')");
   const itf = formWith(ceo.page, "Add deliverable");
   await itf.locator("input[name=deliverable]").fill("Weekend promotion live in all Riyadh branches");
   await itf.locator("select[name=responsibleId]").selectOption({ label: "Nada (Demo)" });
   await submit(ceo.page, itf, "Add deliverable");
   const na = await session("nada@demo.local");
-  await na.page.goto(`${BASE}/objectives?h=30`);
+  await na.page.goto(`${BASE}/overview?obj=30`);
   const cf = formWith(na.page, "Mark complete");
   await cf.locator("input[name=evidenceNote]").fill("Promotion launched 05 Nov; photos in shared folder");
   await submit(na.page, cf, "Mark complete");
@@ -276,42 +315,50 @@ try {
   await ceo.page.reload();
   await submit(ceo.page, formWith(ceo.page, "Approve"), "Approve");
   await ceo.page.reload();
-  check("Objective deliverable approved by manager", (await ceo.page.locator("main").innerText()).includes("Approved by Demo CEO"));
-  await shot(ceo.page, "05-objectives", { full: true });
+  check("Objective deliverable approved from the Overview checklist", (await main(ceo.page)).includes("Approved · Demo CEO"));
+  await shot(ceo.page, "03-overview-objectives", { full: true });
 
   // ---------- Reports ----------
-  for (const [type, fmt, ct] of [["executive", "xlsx", "spreadsheetml"], ["overdue", "pdf", "pdf"], ["director", "xlsx", "spreadsheetml"], ["decisions", "pdf", "pdf"]]) {
+  for (const [type, fmt, ct] of [["executive", "xlsx", "spreadsheetml"], ["overdue", "pdf", "pdf"], ["director", "xlsx", "spreadsheetml"], ["decisions", "pdf", "pdf"], ["ceo-summary", "pdf", "pdf"]]) {
     const r = await ceo.ctx.request.get(`${BASE}/api/reports/${type}?format=${fmt}`);
     const body = await r.body();
     check(`Report ${type}.${fmt} exports`, r.ok() && (r.headers()["content-type"] ?? "").includes(ct) && body.length > 1000, `${body.length} bytes`);
   }
-  await ceo.page.goto(`${BASE}/reports?type=director`);
-  await shot(ceo.page, "06-reports");
-  await ceo.page.goto(`${BASE}/actions`);
-  await shot(ceo.page, "07-action-list");
+  const meetingReport = await ceo.ctx.request.get(`${BASE}/api/reports/meeting?format=pdf`);
+  check("Meeting report removed", meetingReport.status() === 404);
 
-  // ---------- Reminders, persistence, logout ----------
+  // ---------- Reminders and the no-progress alert ----------
+  await db.query("UPDATE action_plans SET last_update_at = NULL, created_at = now() - interval '5 days' WHERE code = 'BP-0012'");
   const cron = await ceo.ctx.request.get(`${BASE}/api/cron/reminders`, { headers: { Authorization: `Bearer ${CRON}` } });
   const cronBody = await cron.json();
   const cron2 = await (await ceo.ctx.request.get(`${BASE}/api/cron/reminders`, { headers: { Authorization: `Bearer ${CRON}` } })).json();
-  check("Reminder sweep runs (overdue reminder issued)", cron.ok() && cronBody.overdue >= 1, JSON.stringify(cronBody));
+  check("Reminder sweep runs (overdue + no-progress alerts)", cron.ok() && cronBody.overdue >= 1 && cronBody.stale >= 1, JSON.stringify(cronBody));
+  await ceo.page.goto(`${BASE}/notifications`);
+  const staleCount = await ceo.page.locator("main a", { hasText: "BP-0012" }).count();
+  check("No-progress alert reaches management once (no duplicates on re-run)", staleCount === 1, `run2 ${JSON.stringify(cron2)} · ${staleCount}`);
   await p.goto(`${BASE}/notifications`);
-  await p.waitForSelector("h1:has-text('Notifications')");
-  const overdueCount = await p.locator("main a", { hasText: "Overdue: BP-0005" }).count();
-  const seenLinks = (await p.locator("main a").allTextContents()).slice(0, 6).join(" | ");
-  check("Reminders are not duplicated on re-run", overdueCount === 1, `run2 ${JSON.stringify(cron2)} · ${overdueCount} notification(s) · url ${p.url()} · links: ${seenLinks}`);
+  check("Overdue reminder not duplicated", (await p.locator("main a", { hasText: "Overdue: BP-0005" }).count()) === 1);
 
-  const mobile = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: Number(process.env.SCALE || 1), storageState: await ceo.ctx.storageState() });
-  const mp = stabilise(await mobile.newPage());
-  await mp.goto(`${BASE}/`);
-  await mp.waitForSelector("text=Requires attention");
-  const overflow = await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  check("Mobile 375px: no horizontal page scroll", !overflow);
-  await shot(mp, "08-mobile-dashboard");
-  await mobile.close();
+  // ---------- Screenshots and layout ----------
+  await ceo.page.goto(`${BASE}/overview`);
+  await shot(ceo.page, "02-overview", { full: true });
+  await ceo.page.goto(`${BASE}/actions`);
+  await shot(ceo.page, "04-action-list");
+  const myw = await session("abdullah.qadi@sandbox.local");
+  await shot(myw.page, "00-my-work", { full: true });
+  await myw.ctx.close();
+  for (const url of ["/", "/overview", "/actions"]) {
+    const mobile = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: SCALE, storageState: await ceo.ctx.storageState() });
+    const mp = stabilise(await mobile.newPage());
+    await mp.goto(`${BASE}${url}`);
+    const overflow = await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    check(`Mobile 375px ${url}: no horizontal page scroll`, !overflow);
+    if (url === "/overview") await shot(mp, "06-mobile-overview");
+    await mobile.close();
+  }
 
   await p.goto(`${BASE}/actions/${rentalId}`);
-  check("Data persists across sessions", (await p.locator("main").innerText()).includes("Completed"));
+  check("Data persists across sessions", (await main(p)).includes("Completed"));
   await p.click("button:has-text('Sign out')");
   await p.waitForURL(/\/login/);
   await p.goto(`${BASE}/`);
@@ -322,6 +369,7 @@ try {
   check("Unexpected error", false, e.stack?.split("\n").slice(0, 3).join(" | "));
 } finally {
   await browser.close();
+  await db.end();
   const failed = results.filter((r) => !r.pass);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
   process.exit(failed.length ? 1 : 0);

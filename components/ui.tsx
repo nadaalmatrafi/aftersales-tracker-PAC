@@ -10,10 +10,10 @@ type Tone = "ok" | "warn" | "danger" | "info" | "neutral" | "accent";
 const TONE: Record<Tone, string> = {
   ok: "bg-ok-soft text-ok",
   warn: "bg-warn-soft text-warn",
-  danger: "bg-accent-soft text-[#ff7b82]",
+  danger: "bg-accent-soft text-accent",
   info: "bg-info-soft text-info",
   neutral: "bg-neutral-soft text-fg-2",
-  accent: "bg-accent-soft text-[#ff7b82]",
+  accent: "bg-accent-soft text-accent",
 };
 
 export function Badge({ tone = "neutral", children, title }: { tone?: Tone; children: ReactNode; title?: string }) {

@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { actionUser, canManageObjectives, isExecutive, type CurrentUser } from "@/lib/auth";
+import { actionUser, canManageObjectives, isCompanyManager, isExecutive, type CurrentUser } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { notify } from "@/lib/notify";
 import { objectiveVisibility } from "@/lib/objectives";
@@ -17,7 +17,7 @@ async function loadItem(u: CurrentUser, itemId: number) {
   return r.rows[0] as Record<string, unknown> | undefined;
 }
 const canApproveItem = (u: CurrentUser, it: Record<string, unknown>) =>
-  isExecutive(u) || u.permissions.has("manage_objectives") || u.permissions.has("approve_completion") || it.owner_id === u.id || it.obj_created_by === u.id;
+  isExecutive(u) || isCompanyManager(u) || u.permissions.has("manage_objectives") || u.permissions.has("approve_completion") || it.owner_id === u.id || it.obj_created_by === u.id;
 
 export async function createObjective(_: FormState, fd: FormData): Promise<FormState> {
   const u = await actionUser();
@@ -42,7 +42,7 @@ export async function createObjective(_: FormState, fd: FormData): Promise<FormS
     })
     .returning({ id: schema.objectives.id });
   await audit(u.id, "objective", o.id, "create", { title, horizon });
-  revalidatePath("/objectives");
+  revalidatePath("/overview");
   return ok("Objective created. Add its measurable deliverables below.");
 }
 
@@ -61,8 +61,8 @@ export async function addItem(_: FormState, fd: FormData): Promise<FormState> {
     .returning({ id: schema.objectiveItems.id });
   await audit(u.id, "objective", objectiveId, "item_add", { itemId: it.id, deliverable });
   if (responsibleId)
-    await notify({ userIds: [responsibleId], excludeUserId: u.id, type: "assignment", title: "Objective deliverable assigned", body: deliverable, link: "/objectives", dedupeKey: `objitem:${it.id}:${responsibleId}` });
-  revalidatePath("/objectives");
+    await notify({ userIds: [responsibleId], excludeUserId: u.id, type: "assignment", title: "Objective deliverable assigned", body: deliverable, link: "/overview?obj=1", dedupeKey: `objitem:${it.id}:${responsibleId}` });
+  revalidatePath("/overview");
   return ok("Deliverable added.");
 }
 
@@ -79,7 +79,7 @@ export async function completeItem(_: FormState, fd: FormData): Promise<FormStat
     if (it.approval_status === "approved" && !canApproveItem(u, it)) return fail("Approved items can only be reopened by management.");
     await db.update(schema.objectiveItems).set({ isDone: false, doneAt: null, doneBy: null, approvalStatus: "none", approvedBy: null, approvedAt: null }).where(eq(schema.objectiveItems.id, itemId));
     await audit(u.id, "objective_item", itemId, "reopen");
-    revalidatePath("/objectives");
+    revalidatePath("/overview");
     return ok("Deliverable reopened.");
   }
   const evidence = str(fd, "evidenceNote", 2000);
@@ -103,10 +103,10 @@ export async function completeItem(_: FormState, fd: FormData): Promise<FormStat
     type: "approval_request",
     title: `Deliverable submitted for approval: ${it.obj_title}`,
     body: `${u.name} marked "${it.deliverable}" as complete.${evidence ? `\nEvidence: ${evidence}` : ""}`,
-    link: "/objectives",
+    link: "/overview?obj=1",
     dedupeKey: `objdone:${itemId}:${Date.now()}`,
   });
-  revalidatePath("/objectives");
+  revalidatePath("/overview");
   return ok("Submitted for manager approval.");
 }
 
@@ -135,10 +135,10 @@ export async function decideItem(_: FormState, fd: FormData): Promise<FormState>
     type: decision === "rejected" ? "rejection" : "approval_request",
     title: `Deliverable ${decision}: ${it.obj_title}`,
     body: `"${it.deliverable}" was ${decision} by ${u.name}.${note ? `\n${note}` : ""}`,
-    link: "/objectives",
+    link: "/overview?obj=1",
     dedupeKey: `objdecision:${itemId}:${Date.now()}`,
   });
-  revalidatePath("/objectives");
+  revalidatePath("/overview");
   return ok(`Deliverable ${decision}.`);
 }
 
@@ -149,6 +149,6 @@ export async function archiveObjective(_: FormState, fd: FormData): Promise<Form
   if (!id) return fail("Invalid objective.");
   await db.update(schema.objectives).set({ archivedAt: new Date() }).where(eq(schema.objectives.id, id));
   await audit(u.id, "objective", id, "archive");
-  revalidatePath("/objectives");
+  revalidatePath("/overview");
   return ok("Objective archived.");
 }
