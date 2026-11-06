@@ -77,12 +77,12 @@ export function ActionTable({ rows, compact, emptyText = "No action plans match 
                 {a.steps_total > 0 ? (
                   <>
                     <span className="tabular-nums">
-                      {a.steps_total - a.steps_done} of {a.steps_total} steps
+                      {a.steps_total - a.steps_done} of {a.steps_total} updates open
                     </span>
                     {a.remaining_steps.length > 0 && <div className={`line-clamp-2 text-[11px] text-muted ${compact ? "max-w-36" : "max-w-48"}`}>{a.remaining_steps.join(" → ")}</div>}
                   </>
                 ) : (
-                  <span className="text-muted">No steps</span>
+                  <span className="text-muted">No updates</span>
                 )}
               </td>
               <td className="whitespace-nowrap">
