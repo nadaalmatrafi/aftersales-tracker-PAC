@@ -63,3 +63,11 @@ All migrations add tables only. Rollback = stop the new app and restore the pre-
   (`leave_periods`), username sign-in (`users.username`), one-page CEO PDF.
 - Migration `0001_hierarchy_username_leave.sql` is additive only (enum value, nullable column, new table).
 - Visual identity: Petromin Auto Care logo, white background, logo colours; status colours unchanged.
+
+## Revision 3 — 2026-11-06 (owner review)
+- Approvals removed entirely: approvals happen outside the system, which is for follow-up only. No completion approval, no deadline-extension
+  requests, no deliverable approval. The owner or management marks an action completed; a deliverable is done when completed with evidence.
+  `approval_records` stays in the schema (unused) so no data is lost; the `pending_approval` enum value is no longer reachable.
+- The separate "Post progress update" form was removed; "Add step" became **Update** (stage, department, assignee, due) and is open to everyone
+  involved in the action. Management can still set status (on hold, cancelled, completed) from Edit.
+- Status filter is multi-select; "Pending Management Decisions" report replaced by an Escalations report.

@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { requireUser, canCreateActions, canExport, seesAllActions } from "@/lib/auth";
 import { listActions, lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar, peopleLabelFor } from "@/components/filter-bar";
+import { FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
 import { PageHeader } from "@/components/ui";
 
 export const metadata = { title: "Action Plans" };
@@ -14,7 +14,7 @@ export default async function ActionsPage({ searchParams }: { searchParams: Prom
   const f = parseFilters(sp);
   delete f.q; // search was replaced by the Status / Company / People filters
   const [rows, lk, people] = await Promise.all([listActions(u, f), lookups(), peopleOptions(u)]);
-  const qs = new URLSearchParams(Object.entries(sp).filter(([k, v]) => typeof v === "string" && v && k !== "q") as [string, string][]).toString();
+  const qs = toQuery(sp, {}, ["q", "deleted"]);
   return (
     <>
       <PageHeader

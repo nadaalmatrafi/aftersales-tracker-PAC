@@ -136,11 +136,11 @@ try {
     ["Finance to validate rental cost versus branch revenue", "PAC · Finance", "Finance Director (Demo)"],
     ["Prepare recommendation for the CEO", "PAC · Network Development", "Farhan (Demo)"],
   ]) {
-    const f = formWith(p, "Add step");
+    const f = formWith(p, "Add update");
     await f.locator("input[name=title]").fill(title);
     await f.locator("select[name=departmentId]").selectOption({ label: dept });
     await f.locator("select[name=assigneeId]").selectOption({ label: who });
-    await submit(p, f, "Add step");
+    await submit(p, f, "Add update");
   }
   await p.reload();
   let pos = await p.locator("section[aria-label='Current position']").innerText();
@@ -161,12 +161,13 @@ try {
   await p.reload();
   const attHref = await p.locator('a[href^="/api/attachments/"]').first().getAttribute("href");
   check("Attachment uploaded and listed", !!attHref);
-  const upd = formWith(p, "Post update");
-  await upd.locator("textarea[name=note]").fill("Weekend promotion drafted; waiting for marketing budget confirmation.");
-  await upd.locator("input[name=progress]").fill("25");
-  await upd.locator("select[name=status]").selectOption("in_progress");
-  await submit(p, upd, "Post update");
-  check("Progress update saved", await seen(p, "Update recorded."));
+  check("Action page has no separate 'Post update' or approvals section", (await p.getByRole("button", { name: "Post update" }).count()) === 0 && (await p.locator("h2", { hasText: "Approvals" }).count()) === 0);
+  const upd = formWith(p, "Add update");
+  await upd.locator("input[name=title]").fill("Weekend promotion — confirm marketing budget");
+  await upd.locator("select[name=departmentId]").selectOption({ label: "PAC · Operations" });
+  await upd.locator("select[name=assigneeId]").selectOption({ label: "Nada (Demo)" });
+  await submit(p, upd, "Add update");
+  check("Update (stage, department, person) added", await seen(p, "Update added."));
 
   // ---------- Employee: login by username is not set for analyst; email works; step hand-off ----------
   const an = await session("analyst@demo.local");
@@ -174,9 +175,9 @@ try {
   await an.page.goto(`${BASE}/`);
   check("Employee's My Work shows the step waiting on them", (await main(an.page)).includes("Collect current rent contracts"));
   await an.page.goto(`${BASE}/actions/${rentalId}`);
-  const s1 = formWith(an.page, "Update step", an.page.locator("li[data-step]", { hasText: "Collect current rent contracts" }).first());
+  const s1 = formWith(an.page, "Save", an.page.locator("li[data-step]", { hasText: "Collect current rent contracts" }).first());
   await s1.locator("select[name=status]").selectOption("done");
-  await submit(an.page, s1, "Update step");
+  await submit(an.page, s1, "Save");
   await an.page.goto(`${BASE}/actions/${footId}`);
   const deniedText = await an.page.locator("body").textContent();
   check("Employee cannot open an unrelated action", deniedText.includes("Not found or not accessible") && !deniedText.includes("customer footfall"));
@@ -193,10 +194,10 @@ try {
   await fin.page.goto(`${BASE}/notifications`);
   check("Next assignee receives a hand-off notification", (await main(fin.page)).includes("Your turn: BP-0003"));
   await fin.page.goto(`${BASE}/actions/${rentalId}`);
-  let s2 = formWith(fin.page, "Update step", fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
+  let s2 = formWith(fin.page, "Save", fin.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
   await s2.locator("select[name=status]").selectOption("blocked");
   await s2.locator("input[name=note]").fill("Two lease contracts missing from Network");
-  await submit(fin.page, s2, "Update step");
+  await submit(fin.page, s2, "Save");
 
   const ceo = await session("ceo@demo.local");
   await ceo.page.goto(`${BASE}/overview`);
@@ -230,26 +231,28 @@ try {
   await nm.page.goto(`${BASE}/actions/${rentalId}`);
   pos = await nm.page.locator("section[aria-label='Current position']").innerText();
   check("Delegate appears as current holder, covering for the person on leave", pos.includes("Network Manager (Demo)") && pos.includes("Covering for Finance Director (Demo)"), pos.replace(/\s+/g, " ").slice(0, 120));
-  s2 = formWith(nm.page, "Update step", nm.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
+  s2 = formWith(nm.page, "Save", nm.page.locator("li[data-step]", { hasText: "Finance to validate" }).first());
   await s2.locator("select[name=status]").selectOption("done");
-  await submit(nm.page, s2, "Update step");
+  await submit(nm.page, s2, "Save");
   await nm.page.reload();
   check("Delegate can complete the absent person's step", (await nm.page.locator("li[data-step]", { hasText: "Finance to validate" }).first().innerText()).includes("Done"));
   await nm.ctx.close();
 
-  // ---------- Owner submits; self-approval blocked; company manager approves ----------
+  // ---------- Owner completes directly (no approvals in this system) ----------
   const fa = await session("farhan");
   check("Sign-in with a username works", (await fa.page.locator("h1").innerText()) === "My Work");
   await fa.page.goto(`${BASE}/actions/${rentalId}`);
-  const s3 = formWith(fa.page, "Update step", fa.page.locator("li[data-step]", { hasText: "Prepare recommendation" }).first());
+  const s3 = formWith(fa.page, "Save", fa.page.locator("li[data-step]", { hasText: "Prepare recommendation" }).first());
   await s3.locator("select[name=status]").selectOption("done");
-  await submit(fa.page, s3, "Update step");
-  const rc = formWith(fa.page, "Submit for approval");
-  await rc.locator("textarea[name=note]").fill("Assessment complete: 2 of 7 branches exceed rent-to-revenue threshold. Recommendation attached.");
-  await submit(fa.page, rc, "Submit for approval");
+  await submit(fa.page, s3, "Save");
+  fa.page.once("dialog", (d) => d.accept());
+  const rc = formWith(fa.page, "Mark as completed");
+  await rc.locator("input[name=note]").fill("Assessment complete: 2 of 7 branches exceed rent-to-revenue threshold.");
+  await submit(fa.page, rc, "Mark as completed");
   await fa.page.reload();
-  check("Owner submits for completion → Pending Approval", (await main(fa.page)).includes("Pending Approval"));
-  check("Owner cannot approve own completion", (await fa.page.getByRole("button", { name: "Approve", exact: true }).count()) === 0);
+  const doneText = await main(fa.page);
+  check("Owner completes the action directly — no approval step (100%)", doneText.includes("Completed") && doneText.includes("100%") && !doneText.includes("Pending Approval"));
+  await shot(fa.page, "05-action-detail", { full: true });
   await fa.ctx.close();
 
   const pcvc = await session("pcvc.gm@demo.local");
@@ -259,18 +262,12 @@ try {
 
   const pac = await session("pac.gm");
   await pac.page.goto(`${BASE}/`);
-  check("PAC company manager sees the approval in My Work", (await pac.page.locator("section:has(h2:has-text('Approvals waiting'))").innerText()).includes("BP-0003"));
+  check("My Work has no approvals section", (await pac.page.locator("h2", { hasText: "Approvals" }).count()) === 0);
   await pac.page.goto(`${BASE}/actions`);
   const pacPeople = await pac.page.locator("select[name=person] option").allTextContents();
   check("Company manager's filter lists their department directors", pacPeople.some((t) => t.startsWith("Farhan (Demo)")) && !pacPeople.some((t) => t.startsWith("PCVC Ops Director")), `${pacPeople.length - 1} directors`);
   await pac.page.goto(`${BASE}/actions/${rentalId}`);
-  const dec = formWith(pac.page, "Approve");
-  await dec.locator("input[name=note]").fill("Approved. Present the two branches to the CEO.");
-  await submit(pac.page, dec, "Approve");
-  await pac.page.reload();
-  const done = await main(pac.page);
-  check("Company manager approves completion (100%)", done.includes("Completed") && done.includes("100%"));
-  await shot(pac.page, "05-action-detail", { full: true });
+  check("PAC company manager can open PAC actions", (await main(pac.page)).includes("rental cost assessment"));
   await pac.ctx.close();
 
   // ---------- Request update ----------
@@ -278,9 +275,11 @@ try {
   const ru = formWith(ceo.page, "Request update");
   await ru.locator("input[name=message]").fill("Where are we on the weekend promotion?");
   await submit(ceo.page, ru, "Request update");
-  check("CEO requests an update from the current holder", await seen(ceo.page, "Update requested from Abdullah Qadi."));
-  await p.goto(`${BASE}/notifications`);
-  check("Holder receives the update request", (await main(p)).includes("Update requested: BP-0005"));
+  check("CEO requests an update from the current holder", await seen(ceo.page, "Update requested from Nada (Demo)."));
+  const nadaN = await session("nada@demo.local");
+  await nadaN.page.goto(`${BASE}/notifications`);
+  check("Holder receives the update request", (await main(nadaN.page)).includes("Update requested: BP-0005"));
+  await nadaN.ctx.close();
 
   // ---------- Duplicates ----------
   await p.goto(`${BASE}/actions/new`);
@@ -313,19 +312,25 @@ try {
   await submit(na.page, cf, "Mark complete");
   await na.ctx.close();
   await ceo.page.reload();
-  await submit(ceo.page, formWith(ceo.page, "Approve"), "Approve");
-  await ceo.page.reload();
-  check("Objective deliverable approved from the Overview checklist", (await main(ceo.page)).includes("Approved · Demo CEO"));
+  const objText = await main(ceo.page);
+  check("Deliverable counts as done straight away (no approval)", objText.includes("Done · Nada (Demo)") && (await ceo.page.getByRole("button", { name: "Approve", exact: true }).count()) === 0);
   await shot(ceo.page, "03-overview-objectives", { full: true });
 
   // ---------- Reports ----------
-  for (const [type, fmt, ct] of [["executive", "xlsx", "spreadsheetml"], ["overdue", "pdf", "pdf"], ["director", "xlsx", "spreadsheetml"], ["decisions", "pdf", "pdf"], ["ceo-summary", "pdf", "pdf"]]) {
+  for (const [type, fmt, ct] of [["executive", "xlsx", "spreadsheetml"], ["overdue", "pdf", "pdf"], ["director", "xlsx", "spreadsheetml"], ["escalations", "pdf", "pdf"], ["ceo-summary", "pdf", "pdf"]]) {
     const r = await ceo.ctx.request.get(`${BASE}/api/reports/${type}?format=${fmt}`);
     const body = await r.body();
     check(`Report ${type}.${fmt} exports`, r.ok() && (r.headers()["content-type"] ?? "").includes(ct) && body.length > 1000, `${body.length} bytes`);
   }
   const meetingReport = await ceo.ctx.request.get(`${BASE}/api/reports/meeting?format=pdf`);
   check("Meeting report removed", meetingReport.status() === 404);
+
+  // ---------- Multi-select status filter ----------
+  await ceo.page.goto(`${BASE}/overview?status=overdue&status=completed`);
+  const multi = await ceo.page.locator("text=Total action plans").locator("..").locator("..").innerText();
+  check("Status filter accepts several statuses at once (overdue + completed)", /plans\s*2\b/i.test(multi), multi.replace(/\s+/g, " "));
+  const opts = await ceo.page.locator("input[type=checkbox][name=status]").evaluateAll((els) => els.map((e) => e.value));
+  check("Status options no longer include Pending Approval", opts.length === 6 && !opts.includes("pending_approval"), opts.join(","));
 
   // ---------- Reminders and the no-progress alert ----------
   await db.query("UPDATE action_plans SET last_update_at = NULL, created_at = now() - interval '5 days' WHERE code = 'BP-0012'");

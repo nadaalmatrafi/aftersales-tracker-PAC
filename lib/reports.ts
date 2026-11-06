@@ -15,10 +15,10 @@ export const REPORTS = {
   department: { title: "Department Performance Report", desc: "Completion and overdue figures by department." },
   director: { title: "Director Accountability Report", desc: "Ownership, completion and open work by responsible person." },
   organization: { title: "Organization Performance Report", desc: "PAC, PCVC and DEX performance side by side." },
-  objectives: { title: "30/60/90-Day Objectives Report", desc: "Deliverables, responsibility, evidence and approval." },
+  objectives: { title: "30/60/90-Day Objectives Report", desc: "Deliverables, responsibility, evidence and completion." },
   impact: { title: "Business Impact Report", desc: "Expected versus confirmed financial and operational impact." },
-  completed: { title: "Completed Initiatives Report", desc: "Approved completions with dates and approvers." },
-  decisions: { title: "Pending Management Decisions Report", desc: "Approvals and escalations awaiting management." },
+  completed: { title: "Completed Initiatives Report", desc: "Completed actions with completion dates." },
+  escalations: { title: "Escalations Report", desc: "Open escalations waiting for a management decision." },
 } as const;
 export type ReportType = keyof typeof REPORTS;
 
@@ -66,7 +66,7 @@ const AGG_COLS = (first: string): Column[] => [
 ];
 
 function filterLabel(f: ActionFilters) {
-  const parts = [f.from || f.to ? `Period ${f.from ?? "…"} – ${f.to ?? "…"}` : null, f.status ? `Status: ${STATUS_LABEL[f.status]}` : null, f.priority ? `Priority: ${PRIORITY_LABEL[f.priority as Priority]}` : null].filter(Boolean);
+  const parts = [f.from || f.to ? `Period ${f.from ?? "…"} – ${f.to ?? "…"}` : null, f.statuses?.length ? `Status: ${f.statuses.map((x) => STATUS_LABEL[x]).join(", ")}` : null, f.priority ? `Priority: ${PRIORITY_LABEL[f.priority as Priority]}` : null].filter(Boolean);
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
@@ -78,15 +78,13 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
     case "executive":
       return { ...base, columns: ACTION_COLS, rows: (await listActions(u, f)).map(actionRow) };
     case "overdue":
-      return { ...base, columns: ACTION_COLS, rows: (await listActions(u, { ...f, status: "overdue" })).map(actionRow) };
+      return { ...base, columns: ACTION_COLS, rows: (await listActions(u, { ...f, statuses: ["overdue"] })).map(actionRow) };
     case "completed": {
-      const rows = await listActions(u, { ...f, status: "completed" }, { orderBy: sql`a.completed_at DESC` });
-      const ap = await db.execute(sql`SELECT a.id, u.name FROM action_plans a JOIN users u ON u.id = a.approved_by_id WHERE a.status = 'completed'`);
-      const by = new Map((ap.rows as { id: number; name: string }[]).map((r) => [r.id, r.name]));
+      const rows = await listActions(u, { ...f, statuses: ["completed"] }, { orderBy: sql`a.completed_at DESC` });
       return {
         ...base,
-        columns: [...ACTION_COLS.filter((c) => !["with", "status"].includes(c.key)), { key: "completedAt", label: "Completed", width: 14 }, { key: "approvedBy", label: "Approved by", width: 18 }],
-        rows: rows.map((a) => ({ ...actionRow(a), completedAt: fmtDate(a.completed_at), approvedBy: by.get(a.id) ?? "" })),
+        columns: [...ACTION_COLS.filter((c) => !["with", "status"].includes(c.key)), { key: "completedAt", label: "Completed", width: 14 }],
+        rows: rows.map((a) => ({ ...actionRow(a), completedAt: fmtDate(a.completed_at) })),
       };
     }
     case "department":
@@ -100,13 +98,12 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
       const map = new Map<string, Record<string, string | number>>();
       for (const a of rows) {
         if (a.status === "cancelled") continue;
-        const e = map.get(a.owner_id) ?? { name: a.owner_name, role: ROLE_LABEL[roleOf.get(a.owner_id) ?? "employee"], owned: 0, completed: 0, open: 0, overdue: 0, pending: 0, stale: 0, holding: 0 };
+        const e = map.get(a.owner_id) ?? { name: a.owner_name, role: ROLE_LABEL[roleOf.get(a.owner_id) ?? "employee"], owned: 0, completed: 0, open: 0, overdue: 0, stale: 0, holding: 0 };
         (e.owned as number)++;
         if (a.status === "completed") (e.completed as number)++;
         else {
           (e.open as number)++;
           if (a.effective_status === "overdue") (e.overdue as number)++;
-          if (a.status === "pending_approval") (e.pending as number)++;
           if (Date.now() - new Date(a.last_update_at ?? a.created_at).getTime() > 7 * 86_400_000) (e.stale as number)++;
         }
         map.set(a.owner_id, e);
@@ -126,7 +123,6 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
           { key: "completed", label: "Completed", width: 11 },
           { key: "open", label: "Open", width: 9 },
           { key: "overdue", label: "Overdue", width: 10 },
-          { key: "pending", label: "Pending approval", width: 14 },
           { key: "stale", label: "No update 7+ days", width: 15 },
           { key: "holding", label: "Currently holding", width: 15 },
         ],
@@ -161,7 +157,7 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
       const r = await db.execute(sql`
         SELECT o.horizon::text, o.title, o.category::text, org.code AS org, i.deliverable, r.name AS responsible, i.deadline::text, i.is_done, i.approval_status, i.evidence_note, ab.name AS approver
           FROM objectives o JOIN objective_items i ON i.objective_id = o.id LEFT JOIN organizations org ON org.id = o.organization_id
-          LEFT JOIN users r ON r.id = i.responsible_id LEFT JOIN users ab ON ab.id = i.approved_by
+          LEFT JOIN users r ON r.id = i.responsible_id LEFT JOIN users ab ON ab.id = i.done_by
          WHERE o.archived_at IS NULL AND ${objectiveVisibility(u)} ORDER BY o.horizon::text::int, o.id, i.id`);
       return {
         ...base,
@@ -173,26 +169,22 @@ export async function buildReport(u: CurrentUser, type: ReportType, f: ActionFil
         rows: (r.rows as Record<string, unknown>[]).map((x) => ({
           horizon: `${x.horizon}-day`, objective: String(x.title), area: x.category ? CATEGORY_LABEL[x.category as Category] : "", org: String(x.org ?? "All"),
           deliverable: String(x.deliverable), responsible: String(x.responsible ?? ""), deadline: fmtDate(x.deadline as string),
-          state: x.approval_status === "approved" ? `Approved (${x.approver})` : x.approval_status === "pending" ? "Awaiting approval" : x.approval_status === "rejected" ? "Rejected" : "Open",
+          state: x.is_done ? `Done${x.approver ? ` (${x.approver})` : ""}` : "Open",
           evidence: String(x.evidence_note ?? ""),
         })),
       };
     }
-    case "decisions": {
-      const vis = actionVisibility(u);
+    case "escalations": {
       const r = await db.execute(sql`
-        SELECT 'Approval: ' || CASE r.type WHEN 'completion' THEN 'completion' ELSE 'deadline extension to ' || to_char(r.requested_date, 'DD Mon YYYY') END AS kind,
-               a.code AS ref, a.point_task AS item, rb.name AS raised_by, r.requested_at AS since, COALESCE(r.request_note, '') AS note
-          FROM approval_records r JOIN action_plans a ON a.id = r.action_id JOIN users rb ON rb.id = r.requested_by WHERE r.status = 'pending' AND ${vis}
-        UNION ALL
-        SELECT 'Escalation', a.code, a.point_task, o.name, a.escalated_at, COALESCE(a.escalation_note, '')
-          FROM action_plans a JOIN users o ON o.id = a.owner_id WHERE a.is_escalated AND a.status NOT IN ('completed','cancelled') AND ${vis}
-
-        ORDER BY since`);
+        SELECT a.code AS ref, a.point_task AS item, o.name AS owner, a.escalated_at AS since, COALESCE(a.escalation_note, '') AS note,
+               (SELECT string_agg(org.code, ', ') FROM action_organizations ao JOIN organizations org ON org.id = ao.organization_id WHERE ao.action_id = a.id) AS org
+          FROM action_plans a JOIN users o ON o.id = a.owner_id
+         WHERE a.is_escalated AND a.status NOT IN ('completed','cancelled') AND ${actionVisibility(u)}
+         ORDER BY a.escalated_at`);
       return {
         ...base,
-        columns: [{ key: "kind", label: "Decision type", width: 26 }, { key: "ref", label: "Reference", width: 14 }, { key: "item", label: "Item", width: 50 }, { key: "raised", label: "Raised by", width: 18 }, { key: "since", label: "Waiting since", width: 16 }, { key: "note", label: "Notes", width: 40 }],
-        rows: (r.rows as Record<string, unknown>[]).map((x) => ({ kind: String(x.kind), ref: String(x.ref), item: String(x.item), raised: String(x.raised_by ?? ""), since: fmtDate(x.since as string), note: String(x.note) })),
+        columns: [{ key: "ref", label: "ID", width: 12 }, { key: "org", label: "Company", width: 12 }, { key: "item", label: "Point / Task", width: 50 }, { key: "owner", label: "Responsible", width: 18 }, { key: "since", label: "Escalated", width: 14 }, { key: "note", label: "Issue", width: 44 }],
+        rows: (r.rows as Record<string, unknown>[]).map((x) => ({ ref: String(x.ref), org: String(x.org ?? ""), item: String(x.item), owner: String(x.owner), since: fmtDate(x.since as string), note: String(x.note) })),
       };
     }
   }
@@ -251,7 +243,7 @@ export async function ceoSummaryPdf(u: CurrentUser, f: ActionFilters, filterText
   const k = kpis(rows, orgs);
   const open = rows.filter((a) => a.status !== "completed" && a.status !== "cancelled");
   const attention = open
-    .filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical" || a.status === "pending_approval")
+    .filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical")
     .slice(0, 12);
   const people = holders(rows).slice(0, 8);
 
@@ -271,7 +263,7 @@ export async function ceoSummaryPdf(u: CurrentUser, f: ActionFilters, filterText
     ["Active", String(k.active), BLACK],
     ["Completed", String(k.completed), [21, 128, 61]],
     ["Overdue", String(k.overdue), RED],
-    ["Pending approval", String(k.pendingApproval), ORANGE],
+    ["Due in 7 days", String(k.upcoming), ORANGE],
     ["Critical / escalated", String(k.critical), RED],
     ["Completion rate", k.completionRate == null ? "—" : `${k.completionRate}%`, BLACK],
     ["No update 7+ days", String(k.stale), BLACK],
@@ -300,7 +292,7 @@ export async function ceoSummaryPdf(u: CurrentUser, f: ActionFilters, filterText
           STATUS_LABEL[a.effective_status],
           String(a.progress),
         ])
-      : [[{ content: "Nothing overdue, blocked, escalated or awaiting approval.", colSpan: 7 }]],
+      : [[{ content: "Nothing overdue, blocked or escalated.", colSpan: 7 }]],
     styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak", valign: "top" },
     headStyles: { fillColor: BLACK, textColor: 255 },
     columnStyles: { 0: { cellWidth: 48 }, 1: { cellWidth: 300 }, 2: { cellWidth: 80 }, 3: { cellWidth: 170 }, 4: { cellWidth: 70 }, 5: { cellWidth: 66 }, 6: { cellWidth: 30, halign: "right" } },

@@ -83,18 +83,9 @@ export function canManageSteps(u: CurrentUser, a: ActionAccessRow) {
   if (!isActionOwner(u, a)) return false;
   return u.role === "director" || u.permissions.has("assign_subtasks");
 }
-/**
- * Approvers: whoever assigned the action, or anyone above them (department director, company manager,
- * approve_completion holders such as Abdullah Qadi, CEO, System Owner). Nobody approves their own request.
- */
-export function canApproveAction(u: CurrentUser, a: ActionAccessRow, requestedBy?: string | null) {
-  if (requestedBy && requestedBy === u.id) return false;
-  if (isExecutive(u) || u.permissions.has("approve_completion")) return true;
-  if (isCompanyManager(u) && overlaps(u.orgIds, a.orgIds)) return true;
-  const ids = selfAndDelegators(u);
-  if (a.assignedById && ids.includes(a.assignedById)) return true;
-  if (a.departmentDirectorId && ids.includes(a.departmentDirectorId)) return true;
-  return false;
+/** Closing an action needs no approval (approvals happen outside this system): the owner or management marks it completed. */
+export function canCompleteAction(u: CurrentUser, a: ActionAccessRow) {
+  return canManageAction(u, a) || isActionOwner(u, a);
 }
 /** Management above the work may ask the current holder for an update. */
 export function canRequestUpdate(u: CurrentUser, a: ActionAccessRow) {

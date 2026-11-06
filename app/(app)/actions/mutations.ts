@@ -7,7 +7,7 @@ import { and, eq, sql, inArray } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { actionUser, canCreateActions, isExecutive, selfAndDelegators, AuthError, type CurrentUser } from "@/lib/auth";
 import {
-  canApproveAction,
+  canCompleteAction,
   canDeleteAction,
   canManageAction,
   canManageSteps,
@@ -167,7 +167,18 @@ export async function editAction(_: FormState, fd: FormData): Promise<FormState>
     if (!c.orgIds.length) return fail("Select at least one organization.");
     if (c.startDate && c.targetDate && c.targetDate < c.startDate) return fail("Target date cannot be before the start date.");
     const [before] = await db.select().from(schema.actionPlans).where(eq(schema.actionPlans.id, id));
+    const st = str(fd, "status");
+    const statusPatch =
+      st && ["not_started", "in_progress", "on_hold", "completed", "cancelled"].includes(st) && st !== before.status
+        ? {
+            status: st as "not_started" | "in_progress" | "on_hold" | "completed" | "cancelled",
+            completedAt: st === "completed" ? new Date() : null,
+            cancelledAt: st === "cancelled" ? new Date() : null,
+            ...(st === "completed" ? { progress: 100 } : {}),
+          }
+        : {};
     const patch = {
+      ...statusPatch,
       pointTask: c.pointTask,
       departmentId: c.departmentId,
       startDate: c.startDate,
@@ -204,45 +215,6 @@ export async function editAction(_: FormState, fd: FormData): Promise<FormState>
     }
     done(id);
     return ok("Action plan saved.");
-  } catch (e) {
-    return handle(e);
-  }
-}
-
-const UPDATE_STATUSES = ["not_started", "in_progress", "on_hold", "cancelled"] as const;
-
-export async function postUpdate(_: FormState, fd: FormData): Promise<FormState> {
-  try {
-    const { u, a, id } = await guard(fd, canUpdateAction);
-    const note = str(fd, "note", 4000);
-    if (!note) return fail("Describe the update.");
-    if (a.status === "completed" || a.status === "cancelled") return fail("This action is closed. Reopen it before posting progress.");
-    const status = str(fd, "status");
-    const isBlocker = fd.get("isBlocker") === "on";
-    const steps = (await db.execute(sql`SELECT count(*)::int AS n FROM action_steps WHERE action_id = ${id}`)).rows[0] as { n: number };
-    const rawProgress = fd.get("progress");
-    let progress: number | null = rawProgress === null || rawProgress === "" ? null : Math.max(0, Math.min(99, Math.round(Number(rawProgress))));
-    if (steps.n > 0) progress = null; // derived from workflow steps
-    let newStatus = status && (UPDATE_STATUSES as readonly string[]).includes(status) ? (status as (typeof UPDATE_STATUSES)[number]) : null;
-    if (newStatus === "cancelled" && !canManageAction(u, a)) return fail("Only the assigning manager or an executive can cancel an action.");
-    if (newStatus === a.status) newStatus = null;
-    await db.transaction(async (tx) => {
-      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, progress, status: newStatus, note, isBlocker });
-      await tx
-        .update(schema.actionPlans)
-        .set({
-          ...(progress != null ? { progress } : {}),
-          ...(newStatus ? { status: newStatus, cancelledAt: newStatus === "cancelled" ? new Date() : null } : {}),
-          ...(isBlocker ? { blocker: note.slice(0, 1000) } : fd.get("clearBlocker") === "on" ? { blocker: null } : {}),
-          lastUpdateAt: new Date(),
-          lastUpdateNote: note.slice(0, 500),
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.actionPlans.id, id));
-      await audit(u.id, "action", id, "progress_update", { progress, status: newStatus, isBlocker }, tx);
-    });
-    done(id);
-    return ok("Update recorded.");
   } catch (e) {
     return handle(e);
   }
@@ -293,10 +265,10 @@ export async function reassignAction(_: FormState, fd: FormData): Promise<FormSt
 
 export async function addStep(_: FormState, fd: FormData): Promise<FormState> {
   try {
-    const { u, id, a } = await guard(fd, canManageSteps, "You are not authorized to add workflow steps.");
-    if (a.status === "completed" || a.status === "cancelled") return fail("This action is closed.");
+    const { u, id, a } = await guard(fd, canUpdateAction, "You are not involved in this action.");
+    if (a.status === "cancelled") return fail("This action is cancelled.");
     const title = str(fd, "title", 500);
-    if (!title) return fail("Describe the step.");
+    if (!title) return fail("Describe the update (the next stage).");
     const assigneeId = await validUser(uuid(fd, "assigneeId"));
     const departmentId = int(fd, "departmentId");
     const dueDate = isoDate(fd, "dueDate");
@@ -305,13 +277,15 @@ export async function addStep(_: FormState, fd: FormData): Promise<FormState> {
       const seq = ((await tx.execute(sql`SELECT COALESCE(max(sequence),0)+1 AS s FROM action_steps WHERE action_id = ${id}`)).rows[0] as { s: number }).s;
       const [s] = await tx.insert(schema.actionSteps).values({ actionId: id, sequence: seq, title, assigneeId, departmentId, dueDate, createdBy: u.id }).returning({ id: schema.actionSteps.id });
       stepId = s.id;
+      // A new update on a completed action reopens it.
+      if (a.status === "completed") await tx.update(schema.actionPlans).set({ status: "in_progress", completedAt: null }).where(eq(schema.actionPlans.id, id));
       if (departmentId) {
         const [p] = await tx.select({ d: schema.actionPlans.departmentId }).from(schema.actionPlans).where(eq(schema.actionPlans.id, id));
         if (p.d !== departmentId) await tx.insert(schema.actionDepartments).values({ actionId: id, departmentId }).onConflictDoNothing();
       }
       await recalcProgress(tx, id);
       await touch(tx, id, `Step added: ${title}`);
-      await audit(u.id, "action", id, "step_add", { stepId: s.id, title, assigneeId, departmentId, dueDate }, tx);
+      await audit(u.id, "action", id, "update_add", { stepId: s.id, title, assigneeId, departmentId, dueDate }, tx);
     });
     if (assigneeId) {
       const info = await actionCode(id);
@@ -326,7 +300,7 @@ export async function addStep(_: FormState, fd: FormData): Promise<FormState> {
       });
     }
     done(id);
-    return ok("Step added.");
+    return ok("Update added.");
   } catch (e) {
     return handle(e);
   }
@@ -361,13 +335,13 @@ export async function setStepStatus(_: FormState, fd: FormData): Promise<FormSta
       await tx.insert(schema.actionUpdates).values({
         actionId: step.actionId,
         userId: u.id,
-        note: `Step "${step.title}" → ${status.replace("_", " ")}${note ? `: ${note}` : ""}`,
+        note: `Update "${step.title}" → ${status.replace("_", " ")}${note ? `: ${note}` : ""}`,
         isBlocker: status === "blocked",
       });
       if (status === "blocked") await tx.update(schema.actionPlans).set({ blocker: `${step.title}: ${note}`.slice(0, 1000) }).where(eq(schema.actionPlans.id, step.actionId));
       else await tx.execute(sql`UPDATE action_plans SET blocker = NULL WHERE id = ${step.actionId} AND NOT EXISTS (SELECT 1 FROM action_steps WHERE action_id = ${step.actionId} AND status = 'blocked')`);
       await recalcProgress(tx, step.actionId);
-      await touch(tx, step.actionId, `Step "${step.title}" ${status.replace("_", " ")}`);
+      await touch(tx, step.actionId, `Update "${step.title}" ${status.replace("_", " ")}`);
       await audit(u.id, "action_step", stepId, "status", { from: step.status, to: status, note }, tx);
     });
     const info = await actionCode(step.actionId);
@@ -392,7 +366,7 @@ export async function setStepStatus(_: FormState, fd: FormData): Promise<FormSta
           excludeUserId: u.id,
           type: "step_handoff",
           title: `All steps finished: ${info.code}`,
-          body: `All workflow steps are complete. Submit the action for completion approval when ready.`,
+          body: `All updates are done. Add the next update, or mark the action completed.`,
           link: `/actions/${step.actionId}`,
           dedupeKey: `steps-done:${step.actionId}:${stepId}`,
         });
@@ -468,7 +442,7 @@ export async function editStep(_: FormState, fd: FormData): Promise<FormState> {
 
 export async function addComment(_: FormState, fd: FormData): Promise<FormState> {
   try {
-    const { u, id, a } = await guard(fd, (usr, act) => canUpdateAction(usr, act) || canApproveAction(usr, act), "You cannot comment on this action.");
+    const { u, id, a } = await guard(fd, (usr, act) => canUpdateAction(usr, act) || canRequestUpdate(usr, act), "You cannot comment on this action.");
     const body = str(fd, "body", 4000);
     if (!body) return fail("Write a comment.");
     await db.transaction(async (tx) => {
@@ -528,133 +502,42 @@ export async function removeAttachment(_: FormState, fd: FormData): Promise<Form
   }
 }
 
-/* ---------- Approvals, extensions, escalation ---------- */
+/* ---------- Completion (no approval step) and escalation ---------- */
 
-async function approversFor(a: ActionAccessRow): Promise<string[]> {
-  const res = await db.execute(sql`SELECT u.id FROM users u JOIN user_permissions p ON p.user_id = u.id WHERE u.is_active AND p.permission = 'approve_completion'`);
-  const cms = await db.execute(sql`SELECT DISTINCT u.id FROM users u JOIN user_organizations uo ON uo.user_id = u.id
-    JOIN action_organizations ao ON ao.organization_id = uo.organization_id WHERE u.is_active AND u.role = 'company_manager' AND ao.action_id = ${a.id}`);
-  const list = [a.assignedById, a.departmentDirectorId, ...cms.rows.map((r) => (r as { id: string }).id), ...res.rows.map((r) => (r as { id: string }).id)].filter((x): x is string => !!x && x !== a.ownerId);
-  if (!list.length) {
-    const ceo = await db.execute(sql`SELECT id FROM users WHERE is_active AND role = 'ceo'`);
-    list.push(...ceo.rows.map((r) => (r as { id: string }).id));
-  }
-  return [...new Set(list)];
-}
-
-export async function requestCompletion(_: FormState, fd: FormData): Promise<FormState> {
+/** The owner or management marks the action completed directly — approvals happen outside this system. */
+export async function markCompleted(_: FormState, fd: FormData): Promise<FormState> {
   try {
-    const { u, a, id } = await guard(fd, (usr, act) => isActionOwner(usr, act) || canManageAction(usr, act), "Only the responsible person can submit for completion.");
+    const { u, a, id } = await guard(fd, canCompleteAction, "Only the responsible person or management can complete this action.");
     if (a.status === "completed" || a.status === "cancelled") return fail("This action is already closed.");
-    if (a.status === "pending_approval") return fail("A completion request is already pending.");
-    const open = (await db.execute(sql`SELECT count(*)::int AS n FROM action_steps WHERE action_id = ${id} AND status NOT IN ('done','skipped')`)).rows[0] as { n: number };
-    if (open.n > 0) return fail(`${open.n} workflow step(s) are still open. Complete or skip them first.`);
     const note = str(fd, "note", 2000);
-    if (!note) return fail("Summarize what was delivered.");
-    let approvalId = 0;
     await db.transaction(async (tx) => {
-      const [r] = await tx.insert(schema.approvalRecords).values({ type: "completion", actionId: id, requestedBy: u.id, requestNote: note }).returning({ id: schema.approvalRecords.id });
-      approvalId = r.id;
-      await tx.update(schema.actionPlans).set({ status: "pending_approval", lastUpdateAt: new Date(), lastUpdateNote: `Submitted for completion: ${note}`.slice(0, 500), updatedAt: new Date() }).where(eq(schema.actionPlans.id, id));
-      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, status: "pending_approval", note: `Submitted for completion review: ${note}` });
-      await audit(u.id, "action", id, "completion_request", { approvalId: r.id }, tx);
+      // Any step still open is closed as part of completing the action.
+      await tx.execute(sql`UPDATE action_steps SET status = 'done', completed_at = now(), completed_by = ${u.id}
+                           WHERE action_id = ${id} AND status NOT IN ('done','skipped')`);
+      await tx
+        .update(schema.actionPlans)
+        .set({ status: "completed", progress: 100, completedAt: new Date(), blocker: null, isEscalated: false, lastUpdateAt: new Date(), lastUpdateNote: `Completed by ${u.name}${note ? `: ${note}` : ""}`.slice(0, 500), updatedAt: new Date() })
+        .where(eq(schema.actionPlans.id, id));
+      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, status: "completed", progress: 100, note: `Action completed${note ? `: ${note}` : ""}` });
+      await audit(u.id, "action", id, "complete", { note }, tx);
     });
     const info = await actionCode(id);
     await notify({
-      userIds: await approversFor(a),
+      userIds: [a.ownerId, a.assignedById],
       excludeUserId: u.id,
-      type: "approval_request",
-      title: `Completion approval requested: ${info.code}`,
-      body: `${u.name} submitted this action for completion review.\n\n${info.task}\n\nSummary: ${note}`,
+      type: "step_handoff",
+      title: `Action completed: ${info.code}`,
+      body: `${u.name} marked this action as completed.${note ? `\n\n${note}` : ""}`,
       link: `/actions/${id}`,
-      dedupeKey: `approval:${approvalId}`,
+      dedupeKey: `completed:${id}:${Date.now()}`,
     });
     done(id);
-    return ok("Submitted for approval.");
+    return ok("Action completed.");
   } catch (e) {
     return handle(e);
   }
 }
 
-export async function requestExtension(_: FormState, fd: FormData): Promise<FormState> {
-  try {
-    const { u, a, id } = await guard(fd, canUpdateAction);
-    const date = isoDate(fd, "requestedDate");
-    const note = str(fd, "note", 2000);
-    if (!date) return fail("Choose the proposed new target date.");
-    if (!note) return fail("Explain why the extension is needed.");
-    const pending = await db.execute(sql`SELECT 1 FROM approval_records WHERE action_id = ${id} AND type = 'deadline_extension' AND status = 'pending'`);
-    if (pending.rows.length) return fail("An extension request is already pending.");
-    const [r] = await db.insert(schema.approvalRecords).values({ type: "deadline_extension", actionId: id, requestedBy: u.id, requestNote: note, requestedDate: date }).returning({ id: schema.approvalRecords.id });
-    await audit(u.id, "action", id, "extension_request", { approvalId: r.id, requestedDate: date });
-    const info = await actionCode(id);
-    await notify({
-      userIds: await approversFor(a),
-      excludeUserId: u.id,
-      type: "approval_request",
-      title: `Deadline extension requested: ${info.code}`,
-      body: `${u.name} requests a new target date of ${date}.\nReason: ${note}`,
-      link: `/actions/${id}`,
-      dedupeKey: `approval:${r.id}`,
-    });
-    done(id);
-    return ok("Extension request submitted.");
-  } catch (e) {
-    return handle(e);
-  }
-}
-
-export async function decideApproval(_: FormState, fd: FormData): Promise<FormState> {
-  try {
-    const u = await actionUser();
-    const approvalId = int(fd, "approvalId");
-    const decision = str(fd, "decision");
-    const note = str(fd, "note", 2000);
-    if (!approvalId || (decision !== "approved" && decision !== "rejected")) return fail("Invalid decision.");
-    const [rec] = await db.select().from(schema.approvalRecords).where(eq(schema.approvalRecords.id, approvalId));
-    if (!rec || rec.status !== "pending" || !rec.actionId) return fail("This request is no longer pending.");
-    const a = await loadActionAccess(u, rec.actionId);
-    if (!a || !canApproveAction(u, a, rec.requestedBy)) return fail("You are not authorized to decide this request.");
-    if (decision === "rejected" && !note) return fail("Give a reason for the rejection.");
-    const id = rec.actionId;
-    await db.transaction(async (tx) => {
-      const upd = await tx
-        .update(schema.approvalRecords)
-        .set({ status: decision, decidedBy: u.id, decidedAt: new Date(), decisionNote: note })
-        .where(and(eq(schema.approvalRecords.id, approvalId), eq(schema.approvalRecords.status, "pending")))
-        .returning({ id: schema.approvalRecords.id });
-      if (!upd.length) throw new AuthError("This request was already decided.");
-      if (rec.type === "completion") {
-        if (decision === "approved") {
-          await tx.update(schema.actionPlans).set({ status: "completed", progress: 100, completedAt: new Date(), approvedById: u.id, blocker: null, isEscalated: false, lastUpdateAt: new Date(), lastUpdateNote: `Completion approved by ${u.name}`, updatedAt: new Date() }).where(eq(schema.actionPlans.id, id));
-          await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, status: "completed", progress: 100, note: `Completion approved${note ? `: ${note}` : ""}` });
-        } else {
-          await tx.update(schema.actionPlans).set({ status: "in_progress", lastUpdateAt: new Date(), lastUpdateNote: `Completion rejected: ${note}`.slice(0, 500), updatedAt: new Date() }).where(eq(schema.actionPlans.id, id));
-          await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, status: "in_progress", note: `Completion rejected: ${note}` });
-        }
-      } else if (rec.type === "deadline_extension" && decision === "approved" && rec.requestedDate) {
-        const [before] = await tx.select({ t: schema.actionPlans.targetDate }).from(schema.actionPlans).where(eq(schema.actionPlans.id, id));
-        await tx.update(schema.actionPlans).set({ targetDate: rec.requestedDate, updatedAt: new Date(), lastUpdateAt: new Date(), lastUpdateNote: `Deadline extended to ${rec.requestedDate}` }).where(eq(schema.actionPlans.id, id));
-        await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, note: `Deadline extension approved: ${before.t ?? "not set"} → ${rec.requestedDate}` });
-      }
-      await audit(u.id, "approval", approvalId, decision, { type: rec.type, actionId: id, note }, tx);
-    });
-    const info = await actionCode(id);
-    await notify({
-      userIds: [rec.requestedBy, a.ownerId],
-      excludeUserId: u.id,
-      type: decision === "rejected" ? "rejection" : "approval_request",
-      title: `${rec.type === "completion" ? "Completion" : "Extension"} ${decision}: ${info.code}`,
-      body: `${u.name} ${decision} the ${rec.type === "completion" ? "completion request" : "deadline extension"}.${note ? `\n\n${note}` : ""}`,
-      link: `/actions/${id}`,
-      dedupeKey: `decision:${approvalId}`,
-    });
-    done(id);
-    return ok(`Request ${decision}.`);
-  } catch (e) {
-    return handle(e);
-  }
-}
 
 export async function escalateAction(_: FormState, fd: FormData): Promise<FormState> {
   try {
@@ -782,7 +665,7 @@ export async function saveImpact(_: FormState, fd: FormData): Promise<FormState>
     const hasActuals = values.actualRevenue != null || values.actualSavings != null || values.actualCost != null;
     if (hasActuals && !values.dataSource) return fail("Actual results require a data source (e.g. finance report reference).");
     const confirm = fd.get("confirmActuals") === "on";
-    if (confirm && !(canManageAction(u, a) || canApproveAction(u, a))) return fail("Only management can confirm actual results.");
+    if (confirm && !canManageAction(u, a)) return fail("Only management can confirm actual results.");
     const [before] = await db.select().from(schema.impactRecords).where(eq(schema.impactRecords.actionId, id));
     const actualsChanged =
       before && (before.actualRevenue !== values.actualRevenue || before.actualSavings !== values.actualSavings || before.actualCost !== values.actualCost);

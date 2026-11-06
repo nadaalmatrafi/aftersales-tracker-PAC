@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, Flame, Paperclip } from "lucide-react";
 import { db } from "@/db";
 import { requireUser, canSeeConfidential, isExecutive, selfAndDelegators } from "@/lib/auth";
 import { listActions, loadActionAccess, lookups } from "@/lib/queries";
-import { canApproveAction, canDeleteAction, canManageAction, canManageSteps, canReassignAction, canRequestUpdate, canUpdateAction, isActionOwner } from "@/lib/access";
+import { canCompleteAction, canDeleteAction, canManageAction, canManageSteps, canReassignAction, canRequestUpdate, canUpdateAction } from "@/lib/access";
 import { CATEGORY_LABEL, STEP_STATUSES, STEP_STATUS_LABEL, type Category, type Priority, type StepStatus } from "@/lib/constants";
 import { fmtDate, fmtDateTime, fmtRelative } from "@/lib/dates";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -14,17 +14,14 @@ import { Badge, EmptyState, Field, OrgTags, PriorityBadge, Progress, Section, St
 import {
   addComment,
   addStep,
-  decideApproval,
   deleteAction,
   editAction,
   editStep,
+  markCompleted,
   escalateAction,
-  postUpdate,
   reassignAction,
   removeAttachment,
   reopenAction,
-  requestCompletion,
-  requestExtension,
   saveImpact,
   requestUpdate,
   setStepStatus,
@@ -42,7 +39,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
   if (!Number.isInteger(id) || id <= 0) notFound();
   const access = await loadActionAccess(u, id);
   if (!access) notFound();
-  const [[a], lk, steps, updates, comments, files, approvals, assignments, impactRows, extra, history] = await Promise.all([
+  const [[a], lk, steps, updates, comments, files, assignments, impactRows, extra, history] = await Promise.all([
     listActions(u, { ids: [id] }),
     lookups(),
     q(sql`SELECT s.*, s.due_date::text AS due, u.name AS assignee_name, d.name AS dept_name, cb.name AS completed_by_name
@@ -52,8 +49,6 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
     q(sql`SELECT c.*, u.name FROM action_comments c JOIN users u ON u.id = c.user_id WHERE c.action_id = ${id} ORDER BY c.created_at`),
     q(sql`SELECT f.id, f.filename, f.size_bytes, f.created_at, f.uploaded_by, u.name FROM attachments f JOIN users u ON u.id = f.uploaded_by
             WHERE f.action_id = ${id} AND f.deleted_at IS NULL ORDER BY f.created_at DESC`),
-    q(sql`SELECT r.*, r.requested_date::text AS req_date, rb.name AS requester, db.name AS decider FROM approval_records r
-            JOIN users rb ON rb.id = r.requested_by LEFT JOIN users db ON db.id = r.decided_by WHERE r.action_id = ${id} ORDER BY r.requested_at DESC`),
     q(sql`SELECT x.*, f.name AS from_name, t.name AS to_name, b.name AS by_name FROM action_assignments x
             LEFT JOIN users f ON f.id = x.from_user_id JOIN users t ON t.id = x.to_user_id LEFT JOIN users b ON b.id = x.assigned_by_id
             WHERE x.action_id = ${id} ORDER BY x.created_at`),
@@ -75,7 +70,6 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
   const update = canUpdateAction(u, access);
   const stepsAllowed = canManageSteps(u, access);
   const closed = a.status === "completed" || a.status === "cancelled";
-  const pending = approvals.filter((r) => r.status === "pending");
   const hidden = <input type="hidden" name="actionId" value={id} />;
 
   return (
@@ -110,14 +104,14 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
         <div>
           <p className="text-[11px] uppercase tracking-wider text-muted">Progress</p>
           <div className="mt-2"><Progress value={a.progress} /></div>
-          <p className="mt-1 text-xs text-muted">{a.steps_total ? `${a.steps_done} of ${a.steps_total} steps complete` : "No workflow steps — progress reported manually"}</p>
+          <p className="mt-1 text-xs text-muted">{a.steps_total ? `${a.steps_done} of ${a.steps_total} updates done` : "No updates yet"}</p>
         </div>
         <div>
           <p className="text-[11px] uppercase tracking-wider text-muted">What remains</p>
           {a.remaining_steps.length ? (
             <ol className="mt-1 list-decimal pl-4 text-xs text-fg-2">{a.remaining_steps.slice(0, 4).map((s, i) => <li key={i}>{s}</li>)}{a.remaining_steps.length > 4 && <li className="list-none text-muted">+{a.remaining_steps.length - 4} more</li>}</ol>
           ) : (
-            <p className="mt-1 text-xs text-muted">{closed ? "Nothing — action closed." : a.status === "pending_approval" ? "Management approval" : "Define workflow steps to track hand-offs."}</p>
+            <p className="mt-1 text-xs text-muted">{closed ? "Nothing — action closed." : "Add an update for the next stage, or mark the action completed."}</p>
           )}
         </div>
         <div>
@@ -131,9 +125,9 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
 
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-5 xl:col-span-2">
-          <Section title="Workflow & hand-offs">
+          <Section title="Updates & hand-offs">
             {steps.length === 0 ? (
-              <EmptyState title="No workflow steps yet.">Break the action into steps across teams so everyone sees where it stands and who holds it.</EmptyState>
+              <EmptyState title="No updates yet.">Add an update with the stage, department and person so everyone sees where it stands and who holds it.</EmptyState>
             ) : (
               <ol className="space-y-2">
                 {steps.map((s, i) => {
@@ -169,7 +163,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                               <ActionForm action={editStep}>
                                 <input type="hidden" name="stepId" value={String(s.id)} />
                                 <input type="hidden" name="op" value="delete" />
-                                <SubmitButton className="btn btn-ghost btn-sm" confirm="Remove this step?">Remove</SubmitButton>
+                                <SubmitButton className="btn btn-ghost btn-sm" confirm="Remove this update?">Remove</SubmitButton>
                               </ActionForm>
                             )}
                           </div>
@@ -183,7 +177,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                               {STEP_STATUSES.filter((st) => st !== s.status && (st !== "skipped" || stepsAllowed)).map((st) => <option key={st} value={st}>{STEP_STATUS_LABEL[st]}</option>)}
                             </select>
                             <input className="input h-8 w-56 text-xs" name="note" placeholder="Note (required if blocked)" maxLength={1000} />
-                            <SubmitButton className="btn btn-secondary btn-sm">Update step</SubmitButton>
+                            <SubmitButton className="btn btn-secondary btn-sm">Save</SubmitButton>
                           </ActionForm>
                           {stepsAllowed && (
                             <ActionForm action={editStep} className="flex flex-wrap items-end gap-2">
@@ -204,10 +198,11 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                 })}
               </ol>
             )}
-            {stepsAllowed && !closed && (
+            {update && a.status !== "cancelled" && (
               <ActionForm action={addStep} className="mt-4 grid gap-2 border-t border-line pt-4 sm:grid-cols-2 lg:grid-cols-5">
                 {hidden}
-                <Field label="Step" className="lg:col-span-2"><input className="input" name="title" required maxLength={500} placeholder="e.g. Finance to validate rental figures" /></Field>
+                <p className="text-sm font-semibold sm:col-span-2 lg:col-span-5">Update</p>
+                <Field label="Stage" className="lg:col-span-2"><input className="input" name="title" required maxLength={500} placeholder="e.g. Finance to validate rental figures" /></Field>
                 <Field label="Department">
                   <select className="input" name="departmentId" defaultValue="">
                     <option value="">—</option>
@@ -221,79 +216,21 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                   </select>
                 </Field>
                 <Field label="Due"><input className="input" type="date" name="dueDate" /></Field>
-                <div className="sm:col-span-2 lg:col-span-5"><SubmitButton className="btn btn-secondary">Add step</SubmitButton></div>
+                <div className="sm:col-span-2 lg:col-span-5"><SubmitButton className="btn btn-primary">Add update</SubmitButton></div>
               </ActionForm>
             )}
           </Section>
 
-          {update && !closed && (
-            <Section title="Post progress update">
-              <ActionForm action={postUpdate} className="grid gap-3 sm:grid-cols-4">
+          {canCompleteAction(u, access) && !closed && (
+            <Section title="Complete the action">
+              <ActionForm action={markCompleted} className="grid gap-2">
                 {hidden}
-                <Field label="Update" className="sm:col-span-4"><textarea className="input" name="note" required maxLength={4000} rows={3} placeholder="What was done, what is next, any dependency." /></Field>
-                {a.steps_total === 0 && (
-                  <Field label="Progress %"><input className="input" type="number" name="progress" min={0} max={99} defaultValue={a.progress} /></Field>
-                )}
-                <Field label="Status">
-                  <select className="input" name="status" defaultValue="">
-                    <option value="">Unchanged</option>
-                    <option value="not_started">Not Started</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="on_hold">On Hold</option>
-                    {manage && <option value="cancelled">Cancelled</option>}
-                  </select>
-                </Field>
-                <div className="flex flex-col justify-end gap-1 text-sm sm:col-span-2">
-                  <label className="inline-flex items-center gap-2"><input type="checkbox" name="isBlocker" className="accent-[#ce102c]" /> Report as blocker</label>
-                  {a.blocker && <label className="inline-flex items-center gap-2"><input type="checkbox" name="clearBlocker" className="accent-[#ce102c]" /> Blocker resolved</label>}
-                </div>
-                <div className="sm:col-span-4"><SubmitButton>Post update</SubmitButton></div>
+                <p className="text-sm text-fg-2">No approval is needed in this system. Mark the action completed when the work is done; any open update is closed with it.</p>
+                <Field label="Closing note (optional)"><input className="input" name="note" maxLength={2000} placeholder="Result, reference or where the evidence is" /></Field>
+                <div><SubmitButton className="btn btn-primary" confirm="Mark this action as completed?">Mark as completed</SubmitButton></div>
               </ActionForm>
             </Section>
           )}
-
-          <Section title={`Approvals${pending.length ? ` · ${pending.length} pending` : ""}`}>
-            {approvals.length === 0 && <p className="mb-3 text-sm text-muted">No approval requests yet.</p>}
-            <ul className="space-y-3">
-              {approvals.map((r) => (
-                <li key={String(r.id)} className="rounded-lg border border-line p-3">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-medium">{r.type === "completion" ? "Completion review" : `Deadline extension → ${fmtDate(r.req_date as string)}`}</span>
-                    <Badge tone={r.status === "pending" ? "warn" : r.status === "approved" ? "ok" : "danger"}>{String(r.status)}</Badge>
-                    <span className="text-xs text-muted">by {String(r.requester)} · {fmtDateTime(r.requested_at as string)}</span>
-                  </div>
-                  {!!r.request_note && <p className="mt-1 whitespace-pre-line text-sm text-fg-2">{String(r.request_note)}</p>}
-                  {r.status !== "pending" && <p className="mt-1 text-xs text-muted">{String(r.status)} by {String(r.decider)} · {fmtDateTime(r.decided_at as string)}{r.decision_note ? ` — ${r.decision_note}` : ""}</p>}
-                  {r.status === "pending" && canApproveAction(u, access, r.requested_by as string) && (
-                    <ActionForm action={decideApproval} className="mt-2 flex flex-wrap items-end gap-2">
-                      <input type="hidden" name="approvalId" value={String(r.id)} />
-                      <input className="input h-8 max-w-80 text-xs" name="note" placeholder="Decision note (required to reject)" maxLength={2000} />
-                      <button name="decision" value="approved" className="btn btn-primary btn-sm">Approve</button>
-                      <button name="decision" value="rejected" className="btn btn-danger btn-sm">Reject</button>
-                    </ActionForm>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {!closed && a.status !== "pending_approval" && (isActionOwner(u, access) || manage) && (
-              <ActionForm action={requestCompletion} className="mt-4 grid gap-2 border-t border-line pt-4">
-                {hidden}
-                <Field label="Submit for completion review"><textarea className="input" name="note" rows={2} maxLength={2000} required placeholder="Summarize the delivered result and evidence." /></Field>
-                <div><SubmitButton className="btn btn-secondary">Submit for approval</SubmitButton></div>
-              </ActionForm>
-            )}
-            {!closed && update && (
-              <details className="mt-3">
-                <summary className="cursor-pointer text-sm text-fg-2 hover:text-fg">Request deadline extension</summary>
-                <ActionForm action={requestExtension} className="mt-2 grid gap-2 sm:grid-cols-3">
-                  {hidden}
-                  <Field label="Proposed target date"><input className="input" type="date" name="requestedDate" required /></Field>
-                  <Field label="Reason" className="sm:col-span-2"><input className="input" name="note" required maxLength={2000} /></Field>
-                  <div><SubmitButton className="btn btn-secondary btn-sm">Request extension</SubmitButton></div>
-                </ActionForm>
-              </details>
-            )}
-          </Section>
 
           <Section title="Business impact">
             <ActionForm action={saveImpact} resetOnSuccess={false} className="space-y-4">
@@ -324,7 +261,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
               {update && (
                 <div className="flex flex-wrap items-center gap-4">
                   <SubmitButton className="btn btn-secondary">Save impact</SubmitButton>
-                  {(manage || canApproveAction(u, access)) && <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="confirmActuals" className="accent-[#ce102c]" /> Confirm actual results</label>}
+                  {manage && <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" name="confirmActuals" className="accent-[#ce102c]" /> Confirm actual results</label>}
                 </div>
               )}
             </ActionForm>
@@ -339,7 +276,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                 </li>
               ))}
             </ul>
-            {(update || canApproveAction(u, access)) && (
+            {(update || canRequestUpdate(u, access)) && (
               <ActionForm action={addComment} className="mt-4 flex flex-col gap-2">
                 {hidden}
                 <textarea className="input" name="body" rows={2} required maxLength={4000} placeholder="Add a comment" aria-label="Comment" />
@@ -364,7 +301,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
               <dt className="text-muted">Objective area</dt><dd>{a.category ? CATEGORY_LABEL[a.category as Category] : "—"}</dd>
               {a.business_impact && <><dt className="text-muted">Impact</dt><dd className="whitespace-pre-line">{a.business_impact}</dd></>}
               <dt className="text-muted">Last update</dt><dd>{a.last_update_at ? fmtDateTime(a.last_update_at) : "None yet"}</dd>
-              {a.completed_at && <><dt className="text-muted">Completed</dt><dd>{fmtDateTime(a.completed_at)}{x.approved_by ? ` · approved by ${x.approved_by}` : ""}</dd></>}
+              {a.completed_at && <><dt className="text-muted">Completed</dt><dd>{fmtDateTime(a.completed_at)}</dd></>}
             </dl>
           </Section>
 
@@ -457,8 +394,10 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                   {hidden}
                   <ActionFields
                     lk={lk}
+                    withStatus
                     canConfidential={canSeeConfidential(u)}
                     d={{
+                      status: a.status,
                       pointTask: a.point_task,
                       orgIds: x.org_ids as number[],
                       departmentId: a.department_id,

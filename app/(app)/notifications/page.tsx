@@ -15,7 +15,7 @@ export default async function NotificationsPage() {
   const rows = r.rows as { id: number; type: NotificationType; title: string; body: string | null; link: string | null; read_at: string | null; created_at: string; email_status: string | null }[];
   return (
     <>
-      <PageHeader title="Notifications" subtitle="Assignments, hand-offs, approvals, deadlines and escalations." actions={<form action={markAllRead}><button className="btn btn-secondary">Mark all as read</button></form>} />
+      <PageHeader title="Notifications" subtitle="Assignments, hand-offs, update requests, deadlines and escalations." actions={<form action={markAllRead}><button className="btn btn-secondary">Mark all as read</button></form>} />
       {rows.length === 0 ? <EmptyState title="No notifications yet." /> : (
         <ul className="card divide-y divide-line">
           {rows.map((n) => (

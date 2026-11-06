@@ -24,7 +24,6 @@ export function kpis(rows: ActionRow[], orgs: { code: string }[]) {
     active: open.length,
     completed,
     overdue: rows.filter((a) => a.effective_status === "overdue").length,
-    pendingApproval: rows.filter((a) => a.status === "pending_approval").length,
     critical: open.filter((a) => a.priority === "critical" || a.is_escalated).length,
     completionRate: total - cancelled > 0 ? Math.round((completed / (total - cancelled)) * 100) : null,
     upcoming: open.filter((a) => a.target_date && a.target_date >= today && a.target_date <= soon).length,
@@ -96,15 +95,14 @@ export function overdueAging(rows: ActionRow[]) {
 
 /** Who currently holds open work — the bottleneck view. */
 export function holders(rows: ActionRow[]) {
-  const map = new Map<string, { name: string; dept: string | null; actingFor: string | null; open: number; overdue: number; blocked: number; approvals: number; oldest: string | null }>();
+  const map = new Map<string, { name: string; dept: string | null; actingFor: string | null; open: number; overdue: number; blocked: number; oldest: string | null }>();
   for (const a of rows) {
     if (!isOpen(a) || !a.waiting_on_name) continue;
     const k = a.waiting_on_id ?? a.waiting_on_name;
-    const e = map.get(k) ?? { name: a.waiting_on_name, dept: a.acting_for ? null : a.waiting_on_dept, actingFor: a.acting_for, open: 0, overdue: 0, blocked: 0, approvals: 0, oldest: null };
+    const e = map.get(k) ?? { name: a.waiting_on_name, dept: a.acting_for ? null : a.waiting_on_dept, actingFor: a.acting_for, open: 0, overdue: 0, blocked: 0, oldest: null };
     e.open++;
     if (a.effective_status === "overdue") e.overdue++;
     if (a.step_blocked) e.blocked++;
-    if (a.waiting_reason === "approval") e.approvals++;
     if (a.waiting_since && (!e.oldest || a.waiting_since < e.oldest)) e.oldest = a.waiting_since;
     map.set(k, e);
   }
@@ -141,12 +139,11 @@ export async function impactSummary(u: CurrentUser, f: ActionFilters) {
 export async function objectiveProgress(u: CurrentUser, org?: number) {
   const r = await db.execute(sql`
     SELECT o.horizon::text AS horizon, count(DISTINCT o.id)::int AS objectives, count(i.id)::int AS items,
-           count(i.id) FILTER (WHERE i.approval_status = 'approved')::int AS done,
-           count(i.id) FILTER (WHERE i.approval_status = 'approved')::int AS approved
+           count(i.id) FILTER (WHERE i.is_done)::int AS done
       FROM objectives o LEFT JOIN objective_items i ON i.objective_id = o.id
      WHERE o.archived_at IS NULL AND ${objectiveVisibility(u)} ${org ? sql`AND (o.organization_id = ${org} OR o.organization_id IS NULL)` : sql``}
      GROUP BY o.horizon ORDER BY o.horizon::text::int`);
-  const rows = r.rows as { horizon: string; objectives: number; items: number; done: number; approved: number }[];
+  const rows = r.rows as { horizon: string; objectives: number; items: number; done: number }[];
   return ["30", "60", "90"].map((h) => {
     const x = rows.find((y) => y.horizon === h);
     return { horizon: `${h}-day`, objectives: x?.objectives ?? 0, items: x?.items ?? 0, done: x?.done ?? 0, pct: x && x.items ? Math.round((x.done / x.items) * 100) : 0 };

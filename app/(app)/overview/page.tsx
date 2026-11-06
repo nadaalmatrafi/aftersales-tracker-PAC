@@ -5,7 +5,7 @@ import { listActions, lookups, parseFilters, peopleOptions } from "@/lib/queries
 import { holders, impactSummary, kpis, monthlyTrend, objectiveProgress, overdueAging, statusBreakdown } from "@/lib/dashboard";
 import { fmtRelative, todayISO, fmtDate } from "@/lib/dates";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar, peopleLabelFor } from "@/components/filter-bar";
+import { FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
 import { ObjectivesCard, ObjectivesPanel } from "@/components/objectives-panel";
 import { KpiCard, PageHeader, Section, EmptyState } from "@/components/ui";
 import { SingleBars, StatusStack, TrendChart } from "@/components/charts";
@@ -21,20 +21,17 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const [rows, lk, peopleOpts, impact, objectives] = await Promise.all([listActions(u, f), lookups(), peopleOptions(u), impactSummary(u, f), objectiveProgress(u, f.org)]);
   const obj = typeof sp.obj === "string" && ["30", "60", "90"].includes(sp.obj) ? sp.obj : null;
   const here = (extra: Record<string, string | null>) => {
-    const p = new URLSearchParams(Object.entries(sp).filter(([, v]) => typeof v === "string" && v) as [string, string][]);
-    for (const [a, b] of Object.entries(extra)) (b == null ? p.delete(a) : p.set(a, b));
-    const q = p.toString();
-    return `/overview${q ? `?${q}` : ""}`;
+    const q = toQuery(sp, {}, Object.keys(extra).concat()).toString();
+    const p = new URLSearchParams(q);
+    for (const [a, b] of Object.entries(extra)) if (b != null) p.set(a, b);
+    const qs2 = p.toString();
+    return `/overview${qs2 ? `?${qs2}` : ""}`;
   };
-  const filterQs = new URLSearchParams(Object.entries(sp).filter(([k, v]) => typeof v === "string" && v && k !== "obj") as [string, string][]).toString();
+  const filterQs = toQuery(sp, {}, ["obj"]);
   const k = kpis(rows, lk.orgs);
-  const qs = (extra: Record<string, string>) => {
-    const p = new URLSearchParams(Object.entries(sp).filter(([, v]) => typeof v === "string" && v) as [string, string][]);
-    for (const [a, b] of Object.entries(extra)) p.set(a, b);
-    return `/actions?${p.toString()}`;
-  };
+  const qs = (extra: Record<string, string>) => `/actions?${toQuery(sp, extra, ["obj"])}`;
   const open = rows.filter((a) => a.status !== "completed" && a.status !== "cancelled");
-  const attention = open.filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical" || a.status === "pending_approval").slice(0, 12);
+  const attention = open.filter((a) => a.effective_status === "overdue" || a.is_escalated || a.step_blocked || a.priority === "critical").slice(0, 12);
   const people = holders(rows).slice(0, 10);
   const byOrg = statusBreakdown(rows, (a) => a.org_codes);
   const byDirector = statusBreakdown(rows, (a) => a.director_name, "No director assigned");
@@ -60,7 +57,6 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         <KpiCard label="Active" value={k.active} tone="info" href={qs({})} />
         <KpiCard label="Completed" value={k.completed} tone="ok" href={qs({ status: "completed" })} />
         <KpiCard label="Overdue" value={k.overdue} tone="danger" href={qs({ status: "overdue" })} />
-        <KpiCard label="Pending approval" value={k.pendingApproval} tone="warn" href={qs({ status: "pending_approval" })} />
         <KpiCard label="Critical issues" value={k.critical} tone="danger" hint="Critical priority or escalated" href={qs({ escalated: "1" })} />
         <KpiCard label="Completion rate" value={k.completionRate == null ? "—" : `${k.completionRate}%`} hint="Completed ÷ non-cancelled" />
         <KpiCard label="Due in 7 days" value={k.upcoming} tone="warn" href={qs({ dueSoon: "1" })} />
@@ -80,7 +76,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
       <div className="mt-5 grid gap-5">
         <Section title="Requires attention — where each item stands" actions={<Link className="text-xs text-muted hover:text-fg" href={qs({})}>All actions →</Link>}>
           <div className="-m-4">
-            <ActionTable rows={attention} emptyText="Nothing overdue, blocked, escalated or awaiting approval." />
+            <ActionTable rows={attention} emptyText="Nothing overdue, blocked or escalated." />
           </div>
         </Section>
       </div>
@@ -94,7 +90,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
               <tbody>
                 {people.map((p) => (
                   <tr key={p.name}>
-                    <td><div className="font-medium">{p.name}{p.actingFor ? <span className="ml-1 text-[11px] font-normal text-orange">covering for {p.actingFor}</span> : null}</div><div className="text-[11px] text-muted">{p.dept ?? ""}{p.approvals ? `${p.dept ? " · " : ""}${p.approvals} approval${p.approvals > 1 ? "s" : ""}` : ""}{p.blocked ? ` · ${p.blocked} blocked` : ""}</div></td>
+                    <td><div className="font-medium">{p.name}{p.actingFor ? <span className="ml-1 text-[11px] font-normal text-orange">covering for {p.actingFor}</span> : null}</div><div className="text-[11px] text-muted">{p.dept ?? ""}{p.blocked ? `${p.dept ? " · " : ""}${p.blocked} blocked` : ""}</div></td>
                     <td className="text-right tabular-nums">{p.open}</td>
                     <td className={`text-right tabular-nums ${p.overdue ? "text-accent" : "text-muted"}`}>{p.overdue}</td>
                     <td className="text-xs text-muted">{fmtRelative(p.oldest)}</td>

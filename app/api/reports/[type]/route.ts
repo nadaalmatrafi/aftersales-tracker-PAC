@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ type: strin
   const headers = (name: string, ct: string) => ({ "Content-Type": ct, "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "private, no-store" });
 
   if (type === "ceo-summary") {
-    const filterText = [f.org ? "company filter" : "", f.person ? "people filter" : "", f.status ? `status ${f.status}` : ""].filter(Boolean).join(", ");
+    const filterText = [f.org ? "company filter" : "", f.person ? "people filter" : "", f.statuses?.length ? `status ${f.statuses.join("/")}` : ""].filter(Boolean).join(", ");
     const body = await ceoSummaryPdf(u, f, filterText ? ` · ${filterText}` : "");
     await audit(u.id, "report", type, "export", { format: "pdf", filters: sp });
     return new NextResponse(new Uint8Array(body), { headers: headers(`CEO-Summary-${stamp}.pdf`, "application/pdf") });

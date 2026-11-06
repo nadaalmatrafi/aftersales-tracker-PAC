@@ -47,7 +47,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
                   ))}
                 </ul>
               )}
-              <p className="mt-3 text-xs text-muted">During your leave your delegate sees and can complete your workflow steps, decide your approvals and receives a copy of your notifications. “Currently with” shows the delegate, marked as covering for you.</p>
+              <p className="mt-3 text-xs text-muted">During your leave your delegate sees and can complete the updates assigned to you and receives a copy of your notifications. “Currently with” shows the delegate, marked as covering for you.</p>
             </div>
             <ActionForm action={addLeave} className="grid gap-3 sm:grid-cols-2">
               <Field label="First day"><input className="input" type="date" name="startDate" required /></Field>

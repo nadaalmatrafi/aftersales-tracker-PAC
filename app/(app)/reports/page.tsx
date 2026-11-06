@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireUser, canExport, seesAllActions } from "@/lib/auth";
 import { lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { buildReport, REPORTS, type ReportType } from "@/lib/reports";
-import { FilterBar, peopleLabelFor } from "@/components/filter-bar";
+import { FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
 import { EmptyState, PageHeader, cx } from "@/components/ui";
 
 export const metadata = { title: "Reports" };
@@ -13,7 +13,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
   const type = (typeof sp.type === "string" && sp.type in REPORTS ? sp.type : "executive") as ReportType;
   const f = parseFilters(sp);
   const [lk, people, report] = await Promise.all([lookups(), peopleOptions(u), buildReport(u, type, f)]);
-  const qs = new URLSearchParams(Object.entries(sp).filter(([k, v]) => typeof v === "string" && v && k !== "type") as [string, string][]).toString();
+  const qs = toQuery(sp, {}, ["type"]);
   const exportAllowed = canExport(u);
   return (
     <>

@@ -14,7 +14,8 @@ export type ActionFilters = {
   owner?: string;
   /** Hierarchy filter: actions involving this person or the part of the organization they lead. */
   person?: string;
-  status?: Status;
+  /** One or more statuses (multi-select). */
+  statuses?: Status[];
   priority?: string;
   from?: string;
   to?: string;
@@ -35,7 +36,8 @@ export function parseFilters(sp: Record<string, string | string[] | undefined>):
     const v = Number(g(k));
     return Number.isInteger(v) && v > 0 ? v : undefined;
   };
-  const status = g("status");
+  const all = (k: string) => (Array.isArray(sp[k]) ? (sp[k] as string[]) : sp[k] ? [sp[k] as string] : []);
+  const statuses = [...new Set(all("status").filter((s) => (STATUSES as readonly string[]).includes(s)))] as Status[];
   const priority = g("priority");
   return {
     org: int("org"),
@@ -43,7 +45,7 @@ export function parseFilters(sp: Record<string, string | string[] | undefined>):
     director: UUID.test(g("director") ?? "") ? g("director") : undefined,
     owner: UUID.test(g("owner") ?? "") ? g("owner") : undefined,
     person: UUID.test(g("person") ?? "") ? g("person") : undefined,
-    status: (STATUSES as readonly string[]).includes(status ?? "") ? (status as Status) : undefined,
+    statuses: statuses.length ? statuses : undefined,
     priority: (PRIORITIES as readonly string[]).includes(priority ?? "") ? priority : undefined,
     from: ISO.test(g("from") ?? "") ? g("from") : undefined,
     to: ISO.test(g("to") ?? "") ? g("to") : undefined,
@@ -67,7 +69,7 @@ export function filterSql(f: ActionFilters, today: string): SQL {
     parts.push(sql`(a.department_id = ${f.dept} OR EXISTS (SELECT 1 FROM action_departments ad WHERE ad.action_id = a.id AND ad.department_id = ${f.dept}))`);
   if (f.director) parts.push(sql`a.department_id IN (SELECT id FROM departments WHERE director_id = ${f.director})`);
   if (f.owner) parts.push(sql`a.owner_id = ${f.owner}`);
-  if (f.status) parts.push(sql`${effectiveStatusSql(today)} = ${f.status}`);
+  if (f.statuses?.length) parts.push(sql`${effectiveStatusSql(today)} IN (${sql.join(f.statuses.map((s) => sql`${s}`), sql`, `)})`);
   if (f.priority) parts.push(sql`a.priority = ${f.priority}`);
   if (f.person)
     parts.push(sql`(a.owner_id = ${f.person} OR a.assigned_by_id = ${f.person}

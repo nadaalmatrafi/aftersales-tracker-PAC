@@ -16,8 +16,9 @@ async function loadItem(u: CurrentUser, itemId: number) {
     FROM objective_items i JOIN objectives o ON o.id = i.objective_id WHERE i.id = ${itemId} AND ${objectiveVisibility(u)}`);
   return r.rows[0] as Record<string, unknown> | undefined;
 }
-const canApproveItem = (u: CurrentUser, it: Record<string, unknown>) =>
-  isExecutive(u) || isCompanyManager(u) || u.permissions.has("manage_objectives") || u.permissions.has("approve_completion") || it.owner_id === u.id || it.obj_created_by === u.id;
+/** Management of an objective (no approval step: deliverables are done when completed with evidence). */
+const canManageItem = (u: CurrentUser, it: Record<string, unknown>) =>
+  isExecutive(u) || isCompanyManager(u) || u.permissions.has("manage_objectives") || it.owner_id === u.id || it.obj_created_by === u.id;
 
 export async function createObjective(_: FormState, fd: FormData): Promise<FormState> {
   const u = await actionUser();
@@ -66,17 +67,16 @@ export async function addItem(_: FormState, fd: FormData): Promise<FormState> {
   return ok("Deliverable added.");
 }
 
-/** Responsible person ticks the deliverable with evidence; it then awaits manager approval. */
+/** Responsible person ticks the deliverable with evidence; it counts as done straight away (no approval step). */
 export async function completeItem(_: FormState, fd: FormData): Promise<FormState> {
   const u = await actionUser();
   const itemId = int(fd, "itemId");
   if (!itemId) return fail("Invalid item.");
   const it = await loadItem(u, itemId);
   if (!it) return fail("Item not found.");
-  if (!(it.responsible_id === u.id || canApproveItem(u, it))) return fail("Only the responsible person can complete this deliverable.");
+  if (!(it.responsible_id === u.id || canManageItem(u, it))) return fail("Only the responsible person or the objective owner can update this deliverable.");
   const undo = fd.get("undo") === "1";
   if (undo) {
-    if (it.approval_status === "approved" && !canApproveItem(u, it)) return fail("Approved items can only be reopened by management.");
     await db.update(schema.objectiveItems).set({ isDone: false, doneAt: null, doneBy: null, approvalStatus: "none", approvedBy: null, approvedAt: null }).where(eq(schema.objectiveItems.id, itemId));
     await audit(u.id, "objective_item", itemId, "reopen");
     revalidatePath("/overview");
@@ -93,53 +93,20 @@ export async function completeItem(_: FormState, fd: FormData): Promise<FormStat
       const buf = Buffer.from(await f.arrayBuffer());
       await tx.insert(schema.attachments).values({ objectiveItemId: itemId, filename: f.name.replace(/[^\w.\- ()]/g, "_").slice(0, 150) || "evidence", mimeType: f.type || "application/octet-stream", sizeBytes: buf.length, sha256: crypto.createHash("sha256").update(buf).digest("hex"), data: buf, uploadedBy: u.id });
     }
-    await tx.update(schema.objectiveItems).set({ isDone: true, doneAt: new Date(), doneBy: u.id, evidenceNote: evidence, approvalStatus: "pending" }).where(eq(schema.objectiveItems.id, itemId));
-    await tx.insert(schema.approvalRecords).values({ type: "objective_item", objectiveItemId: itemId, requestedBy: u.id, requestNote: evidence });
+    await tx.update(schema.objectiveItems).set({ isDone: true, doneAt: new Date(), doneBy: u.id, evidenceNote: evidence, approvalStatus: "none" }).where(eq(schema.objectiveItems.id, itemId));
     await audit(u.id, "objective_item", itemId, "complete", { evidence: !!evidence, file: hasFile }, tx);
   });
   await notify({
     userIds: [it.owner_id as string, it.obj_created_by as string],
     excludeUserId: u.id,
-    type: "approval_request",
-    title: `Deliverable submitted for approval: ${it.obj_title}`,
-    body: `${u.name} marked "${it.deliverable}" as complete.${evidence ? `\nEvidence: ${evidence}` : ""}`,
+    type: "step_handoff",
+    title: `Deliverable completed: ${it.obj_title}`,
+    body: `${u.name} completed "${it.deliverable}".${evidence ? `\nEvidence: ${evidence}` : ""}`,
     link: "/overview?obj=1",
     dedupeKey: `objdone:${itemId}:${Date.now()}`,
   });
   revalidatePath("/overview");
-  return ok("Submitted for manager approval.");
-}
-
-export async function decideItem(_: FormState, fd: FormData): Promise<FormState> {
-  const u = await actionUser();
-  const itemId = int(fd, "itemId");
-  const decision = str(fd, "decision");
-  if (!itemId || (decision !== "approved" && decision !== "rejected")) return fail("Invalid decision.");
-  const it = await loadItem(u, itemId);
-  if (!it || it.approval_status !== "pending") return fail("Nothing to approve.");
-  if (!canApproveItem(u, it) || (it.done_by === u.id && !isExecutive(u))) return fail("You cannot approve your own deliverable.");
-  const note = str(fd, "note", 1000);
-  if (decision === "rejected" && !note) return fail("Give a reason for rejection.");
-  await db.transaction(async (tx) => {
-    await tx
-      .update(schema.objectiveItems)
-      .set(decision === "approved" ? { approvalStatus: "approved", approvedBy: u.id, approvedAt: new Date() } : { approvalStatus: "rejected", isDone: false, doneAt: null })
-      .where(eq(schema.objectiveItems.id, itemId));
-    await tx.execute(sql`UPDATE approval_records SET status = ${decision}, decided_by = ${u.id}, decided_at = now(), decision_note = ${note}
-                         WHERE objective_item_id = ${itemId} AND status = 'pending'`);
-    await audit(u.id, "objective_item", itemId, decision, { note }, tx);
-  });
-  await notify({
-    userIds: [it.done_by as string, it.responsible_id as string],
-    excludeUserId: u.id,
-    type: decision === "rejected" ? "rejection" : "approval_request",
-    title: `Deliverable ${decision}: ${it.obj_title}`,
-    body: `"${it.deliverable}" was ${decision} by ${u.name}.${note ? `\n${note}` : ""}`,
-    link: "/overview?obj=1",
-    dedupeKey: `objdecision:${itemId}:${Date.now()}`,
-  });
-  revalidatePath("/overview");
-  return ok(`Deliverable ${decision}.`);
+  return ok("Deliverable marked as done.");
 }
 
 export async function archiveObjective(_: FormState, fd: FormData): Promise<FormState> {

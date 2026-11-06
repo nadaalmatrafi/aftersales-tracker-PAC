@@ -20,9 +20,11 @@ Architecture and decisions: [`docs/ADR-001-architecture.md`](docs/ADR-001-archit
 | Notifications | In-app + Resend email, per-user and organization-wide preferences, de-duplicated; daily reminder sweep (`/api/cron/reminders`) |
 | Administration | Users (email and optional username sign-in), roles incl. Company Manager (one per company), per-user permissions, company access, departments & directors, audit log, settings, deleted-record restore |
 
+No approvals: this system is for follow-up only (approvals happen outside it). Progress is recorded as **Updates** (stage, department, person);
+the owner or management presses **Mark as completed**. The Status filter is multi-select.
+
 Hierarchy: CEO → Company managers (PAC, PCVC, DEX) → Department directors → Managers → Employees. The People filter shows the level
-directly below the user (System Owner and Abdullah Qadi see everyone; employees have no People filter). Approvals: the assigner or anyone above
-(department director, company manager, Abdullah Qadi, CEO); nobody approves their own request. Branding: Petromin Auto Care logo, white background,
+directly below the user (System Owner and Abdullah Qadi see everyone; employees have no People filter). Branding: Petromin Auto Care logo, white background,
 logo colours only (red #ce102c, orange #fb8606, black #171614); status colours keep their meaning. Meetings were removed at the owner's request
 (tables are kept, unused, so no data is lost).
 
@@ -44,7 +46,7 @@ Sign in with the bootstrap System Owner; you will be asked to change the passwor
 ```bash
 npm run lint && npm run typecheck && npm run build
 npm run db:demo                 # DEMO DATABASE ONLY (name must contain "demo"/"test")
-npm run test:e2e                # 59 end-to-end checks against a running server on the demo database
+npm run test:e2e                # 61 end-to-end checks against a running server on the demo database
 npm run db:backup && npm run db:restore-test -- backups/<file>.dump postgres://user:pass@host:5432/postgres
 ```
 

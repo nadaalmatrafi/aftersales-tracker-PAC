@@ -13,7 +13,6 @@ export const PERMISSIONS = {
   view_all_actions: "View all action plans across organizations",
   assign_any: "Assign and reassign any action plan",
   manage_objectives: "Create and manage 30/60/90-day objectives",
-  approve_completion: "Approve completions and deadline extensions",
   assign_subtasks: "Create workflow steps on owned actions",
   export_reports: "Export reports to Excel and PDF",
   view_confidential: "View confidential executive items",
@@ -38,6 +37,8 @@ export const STATUS_LABEL: Record<Status, string> = {
   cancelled: "Cancelled",
 };
 export const CLOSED_STATUSES: StoredStatus[] = ["completed", "cancelled"];
+/** Statuses offered in filters and forms. There is no approval step in this system (approvals happen outside it). */
+export const FILTER_STATUSES = ["not_started", "in_progress", "on_hold", "overdue", "completed", "cancelled"] as const;
 
 export const STEP_STATUSES = ["pending", "in_progress", "blocked", "done", "skipped"] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
@@ -70,8 +71,6 @@ export const NOTIFICATION_TYPES = {
   reassignment: "Task reassignment",
   deadline_soon: "Approaching deadline",
   overdue: "Overdue action",
-  approval_request: "Approval request",
-  rejection: "Task rejection",
   escalation: "Critical escalation",
   step_handoff: "Workflow hand-off to you",
   update_request: "Update requested from you",

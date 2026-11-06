@@ -10,7 +10,7 @@ import { CATEGORIES, CATEGORY_LABEL, type Category } from "@/lib/constants";
 import { fmtDate, todayISO } from "@/lib/dates";
 import { ActionForm, SubmitButton } from "./forms";
 import { Badge, Field, Progress, cx } from "./ui";
-import { addItem, archiveObjective, completeItem, createObjective, decideItem } from "@/app/(app)/objectives/mutations";
+import { addItem, archiveObjective, completeItem, createObjective } from "@/app/(app)/objectives/mutations";
 
 type Row = Record<string, unknown>;
 
@@ -27,7 +27,7 @@ export function ObjectivesCard({ progress, href }: { progress: { horizon: string
           <Link key={o.horizon} href={href(o.horizon.replace("-day", ""))} className="block px-4 py-3 hover:bg-surface-2">
             <p className="text-xs text-muted">{o.horizon}</p>
             <p className="mt-1 text-xl font-semibold tabular-nums">{o.pct}%</p>
-            <p className="text-[11px] text-muted">{o.done} of {o.items} approved</p>
+            <p className="text-[11px] text-muted">{o.done} of {o.items} done</p>
           </Link>
         ))}
       </div>
@@ -35,15 +35,15 @@ export function ObjectivesCard({ progress, href }: { progress: { horizon: string
   );
 }
 
-/** The compact checklist: add deliverables, mark complete with evidence, approve — without leaving Overview. */
+/** The compact checklist: add deliverables and mark them done with evidence — without leaving Overview. */
 export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { u: CurrentUser; horizon: string; lk: Lookup; closeHref: string; tabHref: (h: string) => string }) {
   const [objs, items, files, actions] = await Promise.all([
     db.execute(sql`SELECT o.*, o.due_date::text AS due, org.code AS org_code, ow.name AS owner_name FROM objectives o
                    LEFT JOIN organizations org ON org.id = o.organization_id LEFT JOIN users ow ON ow.id = o.owner_id
                    WHERE o.archived_at IS NULL AND o.horizon = ${horizon} AND ${objectiveVisibility(u)} ORDER BY o.due_date NULLS LAST, o.id`),
-    db.execute(sql`SELECT i.*, i.deadline::text AS dl, r.name AS responsible_name, ab.name AS approver_name, a.code AS action_code, o.owner_id, o.created_by AS obj_created_by
+    db.execute(sql`SELECT i.*, i.deadline::text AS dl, r.name AS responsible_name, db.name AS done_by_name, a.code AS action_code, o.owner_id, o.created_by AS obj_created_by
                    FROM objective_items i JOIN objectives o ON o.id = i.objective_id LEFT JOIN users r ON r.id = i.responsible_id
-                   LEFT JOIN users ab ON ab.id = i.approved_by LEFT JOIN action_plans a ON a.id = i.action_id
+                   LEFT JOIN users db ON db.id = i.done_by LEFT JOIN action_plans a ON a.id = i.action_id
                    WHERE o.archived_at IS NULL AND o.horizon = ${horizon} AND ${objectiveVisibility(u)} ORDER BY i.id`),
     db.execute(sql`SELECT f.id, f.filename, f.objective_item_id FROM attachments f JOIN objective_items i ON i.id = f.objective_item_id JOIN objectives o ON o.id = i.objective_id
                    WHERE f.deleted_at IS NULL AND o.horizon = ${horizon} AND ${objectiveVisibility(u)}`),
@@ -53,8 +53,8 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
   const today = todayISO();
   const byObj = new Map<number, Row[]>();
   for (const it of items.rows as Row[]) byObj.set(it.objective_id as number, [...(byObj.get(it.objective_id as number) ?? []), it]);
-  const approverOf = (it: Row) =>
-    isExecutive(u) || isCompanyManager(u) || u.permissions.has("manage_objectives") || u.permissions.has("approve_completion") || it.owner_id === u.id || it.obj_created_by === u.id;
+  const managerOf = (it: Row) =>
+    isExecutive(u) || isCompanyManager(u) || u.permissions.has("manage_objectives") || it.owner_id === u.id || it.obj_created_by === u.id;
 
   return (
     <section id="objectives" className="card min-w-0 border-orange/60">
@@ -73,8 +73,8 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
         {objs.rows.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted">No {horizon}-day objectives yet.</p>}
         {(objs.rows as Row[]).map((o) => {
           const list = byObj.get(o.id as number) ?? [];
-          const approved = list.filter((i) => i.approval_status === "approved").length;
-          const pct = list.length ? Math.round((approved / list.length) * 100) : 0;
+          const doneCount = list.filter((i) => i.is_done).length;
+          const pct = list.length ? Math.round((doneCount / list.length) * 100) : 0;
           return (
             <div key={String(o.id)} className="px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -86,18 +86,16 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
               </div>
               <ul className="mt-2 space-y-2">
                 {list.map((it) => {
-                  const status = String(it.approval_status);
+                  const status = it.is_done ? "done" : "open";
                   const late = !it.is_done && it.dl && (it.dl as string) < today;
                   const mine = it.responsible_id === u.id;
                   const evid = (files.rows as Row[]).filter((f) => f.objective_item_id === it.id);
                   return (
                     <li key={String(it.id)} className="rounded-md border border-line px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <span aria-hidden className={cx("flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px]", status === "approved" ? "border-ok bg-ok text-white" : it.is_done ? "border-orange text-orange" : "border-line-strong")}>{status === "approved" ? "✓" : it.is_done ? "•" : ""}</span>
-                        <span className={cx("min-w-0 flex-1", status === "approved" && "text-muted")}>{String(it.deliverable)}</span>
-                        {status === "pending" && <Badge tone="warn">Awaiting approval</Badge>}
-                        {status === "approved" && <Badge tone="ok">Approved · {String(it.approver_name)}</Badge>}
-                        {status === "rejected" && <Badge tone="danger">Rework</Badge>}
+                        <span aria-hidden className={cx("flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px]", status === "done" ? "border-ok bg-ok text-white" : "border-line-strong")}>{status === "done" ? "✓" : ""}</span>
+                        <span className={cx("min-w-0 flex-1", status === "done" && "text-muted")}>{String(it.deliverable)}</span>
+                        {status === "done" && <Badge tone="ok">Done{it.done_by_name ? ` · ${it.done_by_name}` : ""}</Badge>}
                         {!!late && <Badge tone="danger">Overdue</Badge>}
                       </div>
                       <p className="mt-0.5 pl-6 text-xs text-muted">
@@ -106,7 +104,7 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
                         {it.evidence_note ? ` · Evidence: ${it.evidence_note}` : ""}
                       </p>
                       {evid.length > 0 && <div className="pl-6">{evid.map((f) => <a key={String(f.id)} href={`/api/attachments/${f.id}`} className="link mr-3 inline-flex items-center gap-1 text-xs"><Paperclip size={12} />{String(f.filename)}</a>)}</div>}
-                      {!it.is_done && (mine || approverOf(it)) && (
+                      {!it.is_done && (mine || managerOf(it)) && (
                         <ActionForm action={completeItem} className="mt-2 flex flex-wrap items-end gap-2 pl-6">
                           <input type="hidden" name="itemId" value={String(it.id)} />
                           <input className="input h-8 w-60 text-xs" name="evidenceNote" placeholder="Evidence (note, reference, figure)" maxLength={2000} aria-label="Evidence" />
@@ -114,15 +112,7 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
                           <SubmitButton className="btn btn-secondary btn-sm">Mark complete</SubmitButton>
                         </ActionForm>
                       )}
-                      {status === "pending" && approverOf(it) && it.done_by !== u.id && (
-                        <ActionForm action={decideItem} className="mt-2 flex flex-wrap items-end gap-2 pl-6">
-                          <input type="hidden" name="itemId" value={String(it.id)} />
-                          <input className="input h-8 w-52 text-xs" name="note" placeholder="Note (required to reject)" maxLength={1000} aria-label="Decision note" />
-                          <button name="decision" value="approved" className="btn btn-primary btn-sm">Approve</button>
-                          <button name="decision" value="rejected" className="btn btn-danger btn-sm">Reject</button>
-                        </ActionForm>
-                      )}
-                      {!!it.is_done && (mine || approverOf(it)) && (status !== "approved" || approverOf(it)) && (
+                      {!!it.is_done && (mine || managerOf(it)) && (
                         <ActionForm action={completeItem} className="mt-1 pl-6"><input type="hidden" name="itemId" value={String(it.id)} /><input type="hidden" name="undo" value="1" /><SubmitButton className="btn btn-ghost btn-sm">Reopen</SubmitButton></ActionForm>
                       )}
                     </li>

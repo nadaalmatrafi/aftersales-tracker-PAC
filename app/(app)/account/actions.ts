@@ -35,7 +35,7 @@ export async function savePreferences(_: FormState, fd: FormData): Promise<FormS
   return ok("Preferences saved.");
 }
 
-/** Leave & delegate: while the leave is active, steps, approvals and notifications go to the delegate as well. */
+/** Leave & delegate: while the leave is active, updates and notifications go to the delegate as well. */
 export async function addLeave(_: FormState, fd: FormData): Promise<FormState> {
   const u = await actionUser();
   const start = isoDate(fd, "startDate");
@@ -54,7 +54,7 @@ export async function addLeave(_: FormState, fd: FormData): Promise<FormState> {
   await audit(u.id, "user", u.id, "leave_add", { leaveId: row.id, start, end, delegate });
   revalidatePath("/account");
   revalidatePath("/");
-  return ok("Leave saved. Your delegate will receive your steps, approvals and notifications during these dates.");
+  return ok("Leave saved. Your delegate will receive your updates and notifications during these dates.");
 }
 
 export async function cancelLeave(_: FormState, fd: FormData): Promise<FormState> {

@@ -3,6 +3,7 @@ import { CATEGORIES, CATEGORY_LABEL, PRIORITIES, PRIORITY_LABEL } from "@/lib/co
 import { Field } from "./ui";
 
 export type ActionDefaults = {
+  status?: string;
   pointTask?: string;
   orgIds?: number[];
   departmentId?: number | null;
@@ -18,9 +19,20 @@ export type ActionDefaults = {
   isConfidential?: boolean;
 };
 
-export function ActionFields({ lk, d = {}, withOwner, canConfidential }: { lk: Lookup; d?: ActionDefaults; withOwner?: boolean; canConfidential?: boolean }) {
+export function ActionFields({ lk, d = {}, withOwner, withStatus, canConfidential }: { lk: Lookup; d?: ActionDefaults; withOwner?: boolean; withStatus?: boolean; canConfidential?: boolean }) {
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      {withStatus && (
+        <Field label="Status" hint="Set by management. No approval step: Completed closes the action.">
+          <select className="input" name="status" defaultValue={d.status === "pending_approval" ? "in_progress" : d.status}>
+            <option value="not_started">Not Started</option>
+            <option value="in_progress">In Progress</option>
+            <option value="on_hold">On Hold</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </Field>
+      )}
       <Field label="Point / Task" className="md:col-span-2">
         <textarea className="input" name="pointTask" required maxLength={2000} rows={3} defaultValue={d.pointTask} />
       </Field>
