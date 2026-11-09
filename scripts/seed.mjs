@@ -4,7 +4,8 @@ import crypto from "node:crypto";
 import { loadEnv } from "./env.mjs";
 
 loadEnv();
-const url = process.env.DATABASE_URL;
+// Schema changes use the direct (unpooled) connection when the host provides one (e.g. Neon on Vercel).
+const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is not set");
 const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
 const pool = new pg.Pool({ connectionString: url, ssl: isLocal ? undefined : { rejectUnauthorized: false } });

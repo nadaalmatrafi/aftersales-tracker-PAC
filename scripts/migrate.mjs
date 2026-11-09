@@ -5,7 +5,8 @@ import pg from "pg";
 import { loadEnv } from "./env.mjs";
 
 loadEnv();
-const url = process.env.DATABASE_URL;
+// Schema changes use the direct (unpooled) connection when the host provides one (e.g. Neon on Vercel).
+const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!url) {
   console.error("DATABASE_URL is not set");
   process.exit(1);
