@@ -23,7 +23,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
   const lv = leaves.rows as { id: number; s: string; e: string; note: string | null; delegate: string }[];
   return (
     <>
-      <PageHeader title="Account" subtitle={`${u.name} · ${u.email} · ${ROLE_LABEL[u.role]}`} />
+      <PageHeader title="Account" />
       {first && <p role="alert" className="card mb-5 border-warn/50 p-4 text-sm text-warn">Set a new personal password before continuing.</p>}
       <div className="grid gap-5 lg:grid-cols-2">
         <Section title="Change password">

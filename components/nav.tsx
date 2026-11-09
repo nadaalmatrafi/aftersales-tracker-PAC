@@ -38,18 +38,18 @@ export function NavLinks({ items, admin, units = [], epmsUrl }: { items: NavItem
         <>
           <p className="mt-6 mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted">Business units</p>
           <ul className="space-y-0.5">
-            {units.map((o) => {
-              const active = path === "/overview" && search.get("org") === String(o.id);
+            {[{ id: 0, code: "All", name: "All companies" }, ...units].map((o) => {
+              const active = path === "/overview" && (o.id === 0 ? !search.get("org") : search.get("org") === String(o.id));
               return (
                 <li key={o.id}>
                   <Link
-                    href={`/overview?org=${o.id}`}
+                    href={o.id === 0 ? "/overview" : `/overview?org=${o.id}`}
                     title={o.name}
                     aria-current={active ? "page" : undefined}
                     className={cx("flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors", active ? "bg-accent-soft font-medium text-accent" : "text-fg-2 hover:bg-surface-2 hover:text-fg")}
                   >
                     <span className={cx("h-1.5 w-1.5 rounded-full", active ? "bg-accent" : "bg-muted")} aria-hidden />
-                    <span className="flex-1 truncate">{o.code === "CORP" ? "Corporate / Shared Services" : o.code}</span>
+                    <span className="flex-1 truncate">{o.code}</span>
                   </Link>
                 </li>
               );

@@ -19,7 +19,6 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
     <>
       <PageHeader
         title="Reports"
-        subtitle="Exports apply the selected filters and your access permissions."
         actions={exportAllowed ? (
           <>
             <a className="btn btn-secondary" href={`/api/reports/${type}?format=xlsx&${qs}`}>Export Excel</a>

@@ -45,7 +45,7 @@ export default async function MyWork() {
 
   return (
     <>
-      <PageHeader title="My Work" subtitle={<>What is waiting on you · {fmtDate(today)} · {u.name}</>} actions={<Link href="/overview" className="btn btn-secondary">Overview</Link>} />
+      <PageHeader title="My Work" actions={<Link href="/overview" className="btn btn-secondary">Overview</Link>} />
 
       {(leave || cover.length > 0) && (
         <div className="mb-4 grid gap-2">

@@ -26,7 +26,7 @@ export default async function UsersAdmin() {
   const users = res.rows as Record<string, unknown>[];
   return (
     <>
-      <PageHeader title="People & access" subtitle={`${users.length} accounts · role-based access with per-user grants`} />
+      <PageHeader title="People & access" />
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-3 xl:col-span-2">
           {users.map((x) => (

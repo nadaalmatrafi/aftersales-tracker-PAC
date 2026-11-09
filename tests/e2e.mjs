@@ -381,7 +381,16 @@ try {
     await wp.goto(`${BASE}/weekly`);
     check("Weekly review page", (await wp.locator("h1").innerText()) === "Weekly review" && (await main(wp)).includes("Waiting (outside)"));
     const side = await wp.locator("nav[aria-label=Main]").first().innerText();
-    check("Sidebar lists business units incl. Corporate and Open EPMS", side.includes("Corporate / Shared Services") && side.includes("Open EPMS"));
+    check("Sidebar lists All + business units, no Corporate, and Open EPMS", /\bAll\b/.test(side) && side.includes("DEX") && !side.includes("Corporate") && side.includes("Open EPMS"));
+    check("Pages have no description line under the title", (await wp.locator("h1 + p").count()) === 0);
+    await wp.goto(`${BASE}/actions/new`);
+    const nf = formWith(wp, "Create action plan");
+    await nf.locator("textarea[name=pointTask]").fill("Group-wide cost review for all companies (e2e)");
+    await nf.locator("input[name=orgIds][value=all]").check();
+    await Promise.all([wp.waitForURL(/\/actions\/\d+$/, { timeout: 30_000 }), nf.getByRole("button", { name: "Create action plan", exact: true }).click()]);
+    await wp.waitForSelector("h1");
+    const tags = await wp.locator("main").first().innerText();
+    check("“All” assigns the action to every company", ["PAC", "PCVC", "DEX"].every((c) => tags.includes(c)) && !tags.includes("CORP"));
     // Streaming responses keep HTTP 200; the page itself must render "not found" instead of the content.
     await wp.goto(`${BASE}/admin/integrations`);
     const h = await wp.locator("h1").innerText();

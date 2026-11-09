@@ -60,10 +60,10 @@ export default async function WeeklyReview({ searchParams }: { searchParams: Pro
     <>
       <PageHeader
         title="Weekly review"
-        subtitle={<>{fmtDate(start)} – {fmtDate(end)} · what was requested, finished and updated, and what is stuck</>}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Link className="btn btn-secondary btn-sm" href={weekLink(prev)}>← Previous week</Link>
+            <span className="text-sm font-medium tabular-nums text-fg-2">{fmtDate(start)} – {fmtDate(end)}</span>
             {end < todayISO() && <Link className="btn btn-secondary btn-sm" href={weekLink(next > todayISO() ? todayISO() : next)}>Next week →</Link>}
           </div>
         }

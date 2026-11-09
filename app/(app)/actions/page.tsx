@@ -19,7 +19,6 @@ export default async function ActionsPage({ searchParams }: { searchParams: Prom
     <>
       <PageHeader
         title="Action Plans"
-        subtitle={`${rows.length} action plan${rows.length === 1 ? "" : "s"} · ownership, current hand-off position and progress`}
         actions={
           <>
             {canExport(u) && (

@@ -53,6 +53,10 @@ export function ActionFields({ lk, d = {}, withOwner, withStatus, canConfidentia
       <fieldset className="md:col-span-2">
         <legend className="label">Organizations</legend>
         <div className="flex flex-wrap gap-4">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="orgIds" value="all" defaultChecked={lk.orgs.length > 0 && lk.orgs.every((o) => d.orgIds?.includes(o.id))} className="accent-[#ce102c]" />
+            <span><strong className="font-semibold">All</strong> <span className="text-muted">All companies</span></span>
+          </label>
           {lk.orgs.map((o) => (
             <label key={o.id} className="inline-flex items-center gap-2 text-sm">
               <input type="checkbox" name="orgIds" value={o.id} defaultChecked={d.orgIds?.includes(o.id)} className="accent-[#ce102c]" />

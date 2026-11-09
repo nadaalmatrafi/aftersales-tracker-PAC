@@ -20,7 +20,7 @@ export default async function DeletedItemsPage() {
   ).rows as { id: number; code: string; point_task: string; deleted_at: string; name: string | null; orgs: string | null }[];
   return (
     <>
-      <PageHeader title="Deleted items" subtitle="Deleted action plans are kept with their full history and can be restored." />
+      <PageHeader title="Deleted items" />
       <Section title={`Deleted action plans (${deleted.length})`}>
         {deleted.length === 0 ? (
           <EmptyState title="Nothing has been deleted." />

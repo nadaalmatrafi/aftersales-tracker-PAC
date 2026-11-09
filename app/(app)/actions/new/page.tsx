@@ -16,7 +16,7 @@ export default async function NewActionPage() {
   const defaultOrgs = isCompanyManager(u) ? u.orgIds : [];
   return (
     <>
-      <PageHeader title="New action plan" subtitle="Define the task, accountable owner and timeline." />
+      <PageHeader title="New action plan" />
       <div className="card max-w-4xl p-5">
         <ActionForm action={createAction} resetOnSuccess={false}>
           <ActionFields lk={lk} withOwner canConfidential={canSeeConfidential(u)} d={{ orgIds: defaultOrgs, ownerId: u.id }} />

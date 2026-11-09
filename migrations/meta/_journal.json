@@ -22,6 +22,13 @@
       "when": 1794212000000,
       "tag": "0002_waiting_request_type",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794230000000,
+      "tag": "0003_retire_corporate_unit",
+      "breakpoints": true
     }
   ]
 }

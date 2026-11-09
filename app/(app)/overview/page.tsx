@@ -55,7 +55,6 @@ export default async function Overview({ searchParams }: { searchParams: Promise
     <>
       <PageHeader
         title="Overview"
-        subtitle={<>Live figures from action plan records · {fmtDate(todayISO())} · {u.name}</>}
         actions={
           <>
             {canExport(u) && <a className="btn btn-primary" href={`/api/reports/ceo-summary?format=pdf${filterQs ? `&${filterQs}` : ""}`}><FileDown size={15} aria-hidden /> One-page PDF</a>}

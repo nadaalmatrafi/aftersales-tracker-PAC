@@ -22,7 +22,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
   const link = (e: string, id: string) => (e === "action" ? `/actions/${id}` : null);
   return (
     <>
-      <PageHeader title="Audit Log" subtitle="Every significant change, with actor, time and field-level detail." />
+      <PageHeader title="Audit Log" />
       <form className="card no-print mb-4 flex flex-wrap items-end gap-3 p-3">
         <label><span className="label">Entity</span><select className="input" name="entity" defaultValue={entity ?? ""}><option value="">All</option>{["action", "action_step", "approval", "objective", "objective_item", "user", "department", "auth", "report", "settings"].map((e) => <option key={e} value={e}>{e.replace("_", " ")}</option>)}</select></label>
         <label><span className="label">Search</span><input className="input" name="q" defaultValue={q} placeholder="Action, person or record ID" /></label>

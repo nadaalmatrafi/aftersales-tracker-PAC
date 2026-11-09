@@ -27,7 +27,7 @@ export default async function IntegrationsPage() {
   ];
   return (
     <>
-      <PageHeader title="Integrations" subtitle="Connection status. Keys are stored as server environment variables and are never shown here." />
+      <PageHeader title="Integrations" />
       <div className="grid gap-3 md:grid-cols-3">
         {items.map((i) => (
           <div key={i.name} className="card card-pad">

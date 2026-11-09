@@ -50,7 +50,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <Link href="/" className="mb-6 block px-2.5" aria-label="Petromin Auto Care — Business Performance home">
         <Image src="/brand/petromin-auto-care.png" alt="Petromin Auto Care" width={734} height={192} priority className="h-auto w-full max-w-[190px]" />
         <span className="mt-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-2">Business Performance</span>
-        <span className="block text-[10px] tracking-[0.2em] text-muted">PAC · PCVC · DEX · Corporate</span>
+        <span className="block text-[10px] tracking-[0.2em] text-muted">PAC · PCVC · DEX</span>
       </Link>
       <NavLinks items={items} admin={admin} units={units} epmsUrl={epmsUrl} />
       <div className="mt-auto border-t border-line pt-4">

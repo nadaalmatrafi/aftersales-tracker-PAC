@@ -58,12 +58,12 @@ export function Progress({ value, compact }: { value: number; compact?: boolean 
   );
 }
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
+/** Page title with optional actions. No description line under the title (owner's request). */
+export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
         <h1 className="text-xl font-semibold tracking-tight text-fg">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>

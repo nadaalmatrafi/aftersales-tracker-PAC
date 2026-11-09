@@ -96,11 +96,19 @@ function parseCore(fd: FormData) {
     businessImpact: str(fd, "businessImpact", 2000),
     timelineNote: str(fd, "timelineNote", 200),
     isConfidential: fd.get("isConfidential") === "on",
-    orgIds: all(fd, "orgIds").map(Number).filter((n) => Number.isInteger(n) && n > 0),
+    // "all" = every company; expanded to the active company ids by withAllOrgs().
+    orgIds: all(fd, "orgIds").includes("all") ? [-1] : all(fd, "orgIds").map(Number).filter((n) => Number.isInteger(n) && n > 0),
     supportDeptIds: all(fd, "supportDeptIds").map(Number).filter((n) => Number.isInteger(n) && n > 0),
     contributorIds: all(fd, "contributorIds").filter((v) => /^[0-9a-f-]{36}$/i.test(v)),
     progress: progressRaw === null || progressRaw === "" ? null : Math.max(0, Math.min(100, Math.round(Number(progressRaw)))),
   };
+}
+
+/** Expands the "All" choice into every active company. */
+async function withAllOrgs<T extends { orgIds: number[] }>(c: T): Promise<T> {
+  if (!c.orgIds.includes(-1)) return c;
+  const r = await db.execute(sql`SELECT id FROM organizations WHERE is_active ORDER BY id`);
+  return { ...c, orgIds: (r.rows as { id: number }[]).map((x) => x.id) };
 }
 
 export async function createAction(_: FormState, fd: FormData): Promise<FormState> {
@@ -108,9 +116,9 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
   try {
     const u = await actionUser();
     if (!canCreateActions(u)) return fail("You are not authorized to create action plans.");
-    const c = parseCore(fd);
+    const c = await withAllOrgs(parseCore(fd));
     if (!c.pointTask) return fail("Point / Task is required.");
-    if (!c.orgIds.length) return fail("Select at least one organization.");
+    if (!c.orgIds.length) return fail("Select at least one company, or All.");
     if (c.startDate && c.targetDate && c.targetDate < c.startDate) return fail("Target date cannot be before the start date.");
     const ownerId = (await validUser(uuid(fd, "ownerId"))) ?? u.id;
 
@@ -166,9 +174,9 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
 export async function editAction(_: FormState, fd: FormData): Promise<FormState> {
   try {
     const { u, id } = await guard(fd, canManageAction);
-    const c = parseCore(fd);
+    const c = await withAllOrgs(parseCore(fd));
     if (!c.pointTask) return fail("Point / Task is required.");
-    if (!c.orgIds.length) return fail("Select at least one organization.");
+    if (!c.orgIds.length) return fail("Select at least one company, or All.");
     if (c.startDate && c.targetDate && c.targetDate < c.startDate) return fail("Target date cannot be before the start date.");
     const [before] = await db.select().from(schema.actionPlans).where(eq(schema.actionPlans.id, id));
     const st = str(fd, "status");

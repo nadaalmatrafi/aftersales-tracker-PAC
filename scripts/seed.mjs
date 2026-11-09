@@ -20,7 +20,6 @@ const ORGS = [
   ["PAC", "Petromin Auto Care"],
   ["PCVC", "Petromin Commercial Vehicle Care"],
   ["DEX", "DEX"],
-  ["CORP", "Corporate / Shared Services"],
 ];
 // The 14 initial action plans are optional: a fresh system starts empty unless SEED_INITIAL_ACTIONS=1.
 const SEED_ACTIONS = process.env.SEED_INITIAL_ACTIONS === "1";
