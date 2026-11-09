@@ -29,6 +29,7 @@ export const priorityEnum = pgEnum("bp_priority", ["low", "medium", "high", "cri
 export const actionStatusEnum = pgEnum("bp_action_status", [
   "not_started",
   "in_progress",
+  "waiting",
   "pending_approval",
   "on_hold",
   "completed",
@@ -214,6 +215,11 @@ export const actionPlans = pgTable(
     status: actionStatusEnum("status").notNull().default("not_started"),
     progress: integer("progress").notNull().default(0),
     category: categoryEnum("category"),
+    /** Kind of request: report, sales increase, expense reduction, business review, cost improvement, other. */
+    requestType: text("request_type"),
+    /** While status = waiting: who or what outside this system the action is waiting on (no approval workflow here). */
+    waitingFor: text("waiting_for"),
+    waitingSince: ts("waiting_since"),
     businessImpact: text("business_impact"),
     blocker: text("blocker"),
     isEscalated: boolean("is_escalated").notNull().default(false),

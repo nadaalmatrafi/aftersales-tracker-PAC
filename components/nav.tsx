@@ -1,14 +1,15 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle } from "lucide-react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle, CalendarClock, Plug, Trash2, ExternalLink } from "lucide-react";
 import { cx } from "./ui";
 
-const ICONS = { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle };
+const ICONS = { Inbox, LayoutDashboard, ListChecks, FileBarChart, Bell, Users, Building2, ScrollText, Settings, UserCircle, CalendarClock, Plug, Trash2 };
 export type NavItem = { href: string; label: string; icon: keyof typeof ICONS; badge?: number };
 
-export function NavLinks({ items, admin }: { items: NavItem[]; admin: NavItem[] }) {
+export function NavLinks({ items, admin, units = [], epmsUrl }: { items: NavItem[]; admin: NavItem[]; units?: { id: number; code: string; name: string }[]; epmsUrl?: string }) {
   const path = usePathname();
+  const search = useSearchParams();
   const isActive = (href: string) => (href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`));
   const render = (it: NavItem) => {
     const Icon = ICONS[it.icon];
@@ -33,11 +34,40 @@ export function NavLinks({ items, admin }: { items: NavItem[]; admin: NavItem[] 
   return (
     <nav aria-label="Main">
       <ul className="space-y-0.5">{items.map(render)}</ul>
+      {units.length > 0 && (
+        <>
+          <p className="mt-6 mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted">Business units</p>
+          <ul className="space-y-0.5">
+            {units.map((o) => {
+              const active = path === "/overview" && search.get("org") === String(o.id);
+              return (
+                <li key={o.id}>
+                  <Link
+                    href={`/overview?org=${o.id}`}
+                    title={o.name}
+                    aria-current={active ? "page" : undefined}
+                    className={cx("flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors", active ? "bg-accent-soft font-medium text-accent" : "text-fg-2 hover:bg-surface-2 hover:text-fg")}
+                  >
+                    <span className={cx("h-1.5 w-1.5 rounded-full", active ? "bg-accent" : "bg-muted")} aria-hidden />
+                    <span className="flex-1 truncate">{o.code === "CORP" ? "Corporate / Shared Services" : o.code}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
       {admin.length > 0 && (
         <>
           <p className="mt-6 mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-widest text-muted">Administration</p>
           <ul className="space-y-0.5">{admin.map(render)}</ul>
         </>
+      )}
+      {epmsUrl && (
+        <a href={epmsUrl} target="_blank" rel="noopener noreferrer" className="mt-6 flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-fg-2 hover:bg-surface-2 hover:text-fg">
+          <ExternalLink size={16} strokeWidth={1.75} className="text-muted" aria-hidden />
+          <span className="flex-1">Open EPMS</span>
+        </a>
       )}
     </nav>
   );

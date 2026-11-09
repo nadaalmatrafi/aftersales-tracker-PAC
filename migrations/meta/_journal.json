@@ -15,6 +15,13 @@
       "when": 1793883365024,
       "tag": "0001_hierarchy_username_leave",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794212000000,
+      "tag": "0002_waiting_request_type",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import type { Lookup } from "@/lib/queries";
-import { CATEGORIES, CATEGORY_LABEL, PRIORITIES, PRIORITY_LABEL } from "@/lib/constants";
+import { CATEGORIES, CATEGORY_LABEL, PRIORITIES, PRIORITY_LABEL, REQUEST_TYPES, REQUEST_TYPE_LABEL } from "@/lib/constants";
 import { Field } from "./ui";
 
 export type ActionDefaults = {
@@ -14,6 +14,8 @@ export type ActionDefaults = {
   targetDate?: string | null;
   priority?: string;
   category?: string | null;
+  requestType?: string | null;
+  waitingFor?: string | null;
   businessImpact?: string | null;
   timelineNote?: string | null;
   isConfidential?: boolean;
@@ -23,16 +25,28 @@ export function ActionFields({ lk, d = {}, withOwner, withStatus, canConfidentia
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {withStatus && (
-        <Field label="Status" hint="Set by management. No approval step: Completed closes the action.">
+        <Field label="Status" hint="Set by management. No approval step here: Completed closes the action.">
           <select className="input" name="status" defaultValue={d.status === "pending_approval" ? "in_progress" : d.status}>
             <option value="not_started">Not Started</option>
             <option value="in_progress">In Progress</option>
+            <option value="waiting">Waiting (on something outside this system)</option>
             <option value="on_hold">On Hold</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
           </select>
         </Field>
       )}
+      {withStatus && (
+        <Field label="Waiting for" hint="Required when the status is Waiting — e.g. “Finance decision”, “Supplier quotation”.">
+          <input className="input" name="waitingFor" maxLength={300} defaultValue={d.waitingFor ?? ""} />
+        </Field>
+      )}
+      <Field label="Request type">
+        <select className="input" name="requestType" defaultValue={d.requestType ?? ""}>
+          <option value="">Not specified</option>
+          {REQUEST_TYPES.map((t) => <option key={t} value={t}>{REQUEST_TYPE_LABEL[t]}</option>)}
+        </select>
+      </Field>
       <Field label="Point / Task" className="md:col-span-2">
         <textarea className="input" name="pointTask" required maxLength={2000} rows={3} defaultValue={d.pointTask} />
       </Field>

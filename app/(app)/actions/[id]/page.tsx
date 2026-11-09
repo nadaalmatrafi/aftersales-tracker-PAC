@@ -6,10 +6,11 @@ import { db } from "@/db";
 import { requireUser, canSeeConfidential, isExecutive, selfAndDelegators } from "@/lib/auth";
 import { listActions, loadActionAccess, lookups } from "@/lib/queries";
 import { canCompleteAction, canDeleteAction, canManageAction, canManageSteps, canReassignAction, canRequestUpdate, canUpdateAction } from "@/lib/access";
-import { CATEGORY_LABEL, STEP_STATUSES, STEP_STATUS_LABEL, type Category, type Priority, type StepStatus } from "@/lib/constants";
+import { CATEGORY_LABEL, REQUEST_TYPE_LABEL, type RequestType, STEP_STATUSES, STEP_STATUS_LABEL, type Category, type Priority, type StepStatus } from "@/lib/constants";
 import { fmtDate, fmtDateTime, fmtRelative } from "@/lib/dates";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { ActionFields } from "@/components/action-fields";
+import { FileInput } from "@/components/file-input";
 import { Badge, EmptyState, Field, OrgTags, PriorityBadge, Progress, Section, StatusBadge, StepBadge } from "@/components/ui";
 import {
   addComment,
@@ -81,6 +82,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
           <OrgTags codes={a.org_codes} />
           <StatusBadge status={a.effective_status} />
           <PriorityBadge priority={a.priority as Priority} />
+          {a.request_type && <Badge>{REQUEST_TYPE_LABEL[a.request_type as RequestType] ?? a.request_type}</Badge>}
           {!!x.is_confidential && <Badge tone="warn">Confidential</Badge>}
           {a.is_escalated && <Badge tone="danger"><Flame size={11} aria-hidden /> Escalated</Badge>}
         </div>
@@ -95,7 +97,7 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
           {!closed && a.acting_for && <p className="text-xs font-medium text-orange">Covering for {a.acting_for} (on leave)</p>}
           {!closed && (
             <p className="text-xs text-muted">
-              {a.waiting_reason === "approval" ? "Approval decision" : a.waiting_on_step ?? "Accountable owner"}
+              {a.waiting_on_step ?? "Accountable owner"}
               {a.waiting_on_dept ? ` · ${a.waiting_on_dept}` : ""}
               {a.waiting_since ? ` · since ${fmtRelative(a.waiting_since)}` : ""}
             </p>
@@ -368,9 +370,8 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
             {update && (
               <ActionForm action={uploadAttachment} className="mt-3 space-y-2">
                 {hidden}
-                <input className="block w-full text-xs text-fg-2 file:mr-3 file:rounded file:border-0 file:bg-surface-3 file:px-3 file:py-1.5 file:text-fg" type="file" name="file" required aria-label="File" />
+                <FileInput />
                 <SubmitButton className="btn btn-secondary btn-sm" pendingText="Uploading…">Upload</SubmitButton>
-                <p className="text-xs text-muted">PDF, Office, images, CSV or text · max 10 MB</p>
               </ActionForm>
             )}
           </Section>
@@ -407,6 +408,8 @@ export default async function ActionDetail({ params }: { params: Promise<{ id: s
                       targetDate: a.target_date,
                       priority: a.priority,
                       category: a.category,
+                      requestType: a.request_type,
+                      waitingFor: a.waiting_for,
                       businessImpact: a.business_impact,
                       timelineNote: a.timeline_note,
                       isConfidential: !!x.is_confidential,

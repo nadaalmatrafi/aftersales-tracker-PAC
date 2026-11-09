@@ -330,7 +330,7 @@ try {
   const multi = await ceo.page.locator("text=Total action plans").locator("..").locator("..").innerText();
   check("Status filter accepts several statuses at once (overdue + completed)", /plans\s*2\b/i.test(multi), multi.replace(/\s+/g, " "));
   const opts = await ceo.page.locator("input[type=checkbox][name=status]").evaluateAll((els) => els.map((e) => e.value));
-  check("Status options no longer include Pending Approval", opts.length === 6 && !opts.includes("pending_approval"), opts.join(","));
+  check("Status options: no Pending Approval, includes Waiting", opts.length === 7 && !opts.includes("pending_approval") && opts.includes("waiting"), opts.join(","));
 
   // ---------- Reminders and the no-progress alert ----------
   await db.query("UPDATE action_plans SET last_update_at = NULL, created_at = now() - interval '5 days' WHERE code = 'BP-0012'");
@@ -349,6 +349,57 @@ try {
   await shot(ceo.page, "02-overview", { full: true });
   await ceo.page.goto(`${BASE}/actions`);
   await shot(ceo.page, "04-action-list");
+  // ---------- Round 3: Waiting status, request type, clear filters, new pages ----------
+  {
+    const w = await session("abdullah.qadi@sandbox.local");
+    const wp = w.page;
+    await wp.goto(`${BASE}/actions/6`);
+    await wp.click("summary:has-text('Edit action plan')");
+    const ed = formWith(wp, "Save changes");
+    await ed.locator("select[name=status]").selectOption("waiting");
+    await submit(wp, ed, "Save changes");
+    check("Waiting without “waiting for” is refused with a clear message", await seen(wp, "write who or what the action is waiting for"));
+    await ed.locator("input[name=waitingFor]").fill("Finance decision on package pricing");
+    await ed.locator("select[name=requestType]").selectOption("sales_increase");
+    await submit(wp, ed, "Save changes");
+    check("Waiting status with request type saved", await seen(wp, "Action plan saved."));
+    await wp.reload();
+    const pos = await wp.locator("section[aria-label='Current position']").innerText();
+    check("Current position names what the action is waiting for", pos.includes("Finance decision on package pricing"), pos.replace(/\s+/g, " ").slice(0, 120));
+
+    await wp.goto(`${BASE}/actions?status=waiting`);
+    const sum = await wp.locator("[role=status]").filter({ hasText: "matching" }).first().innerText();
+    check("Results line states count and the active filter", /1 action plan/.test(sum) && sum.includes("Status: Waiting"), sum.replace(/\s+/g, " "));
+    check("Waiting action shows request type tag", (await main(wp)).includes("Sales increase"));
+    await wp.goto(`${BASE}/actions?type=report`);
+    const none = await main(wp);
+    check("Empty result explains the filters and offers Clear all", none.includes("No action plans") && none.includes("Type: Report") && none.includes("Clear all"));
+    await wp.getByRole("link", { name: "Clear all" }).click();
+    await wp.waitForURL((u) => u.pathname === "/actions" && !u.search);
+    check("Clear all removes every filter", await seen(wp, "no filters applied"));
+
+    await wp.goto(`${BASE}/weekly`);
+    check("Weekly review page", (await wp.locator("h1").innerText()) === "Weekly review" && (await main(wp)).includes("Waiting (outside)"));
+    const side = await wp.locator("nav[aria-label=Main]").first().innerText();
+    check("Sidebar lists business units incl. Corporate and Open EPMS", side.includes("Corporate / Shared Services") && side.includes("Open EPMS"));
+    // Streaming responses keep HTTP 200; the page itself must render "not found" instead of the content.
+    await wp.goto(`${BASE}/admin/integrations`);
+    const h = await wp.locator("h1").innerText();
+    check("Integrations page is owner-only", h !== "Integrations" && !(await main(wp)).includes("Email delivery log"), h);
+
+    await wp.goto(`${BASE}/actions/6`);
+    const big = Buffer.alloc(5 * 1024 * 1024, 1);
+    await wp.locator("input[type=file][name=file]").first().setInputFiles({ name: "big-report.pdf", mimeType: "application/pdf", buffer: big });
+    check("Oversized file is explained before upload", await seen(wp, "The limit is 4.0 MB"));
+    await wp.locator("input[type=file][name=file]").first().setInputFiles({ name: "evidence.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 test") });
+    await submit(wp, formWith(wp, "Upload"), "Upload");
+    check("Small file uploads", (await main(wp)).includes("evidence.pdf"));
+    await shot(wp, "07-waiting-action", { full: true });
+    await wp.goto(`${BASE}/weekly`);
+    await shot(wp, "08-weekly", { full: true });
+    await w.ctx.close();
+  }
+
   const myw = await session("abdullah.qadi@sandbox.local");
   await shot(myw.page, "00-my-work", { full: true });
   await myw.ctx.close();

@@ -10,7 +10,7 @@ import { UserFields } from "@/components/user-fields";
 import { Badge, Field, PageHeader, Section } from "@/components/ui";
 import { createUser, resetPassword, setUserActive, updateUser } from "../mutations";
 
-export const metadata = { title: "Users & Permissions" };
+export const metadata = { title: "People & access" };
 
 export default async function UsersAdmin() {
   const me = await requireUser();
@@ -26,7 +26,7 @@ export default async function UsersAdmin() {
   const users = res.rows as Record<string, unknown>[];
   return (
     <>
-      <PageHeader title="Users & Permissions" subtitle={`${users.length} accounts · role-based access with per-user grants`} />
+      <PageHeader title="People & access" subtitle={`${users.length} accounts · role-based access with per-user grants`} />
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-3 xl:col-span-2">
           {users.map((x) => (

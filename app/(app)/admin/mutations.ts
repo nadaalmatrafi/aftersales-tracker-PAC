@@ -183,7 +183,7 @@ export async function restoreAction(_: FormState, fd: FormData): Promise<FormSta
     if (!id) return fail("Invalid action.");
     await db.update(schema.actionPlans).set({ deletedAt: null, deletedBy: null }).where(and(eq(schema.actionPlans.id, id), sql`deleted_at IS NOT NULL`));
     await audit(u.id, "action", id, "restore");
-    revalidatePath("/admin/settings");
+    revalidatePath("/admin/deleted");
     revalidatePath("/actions");
     return ok("Action plan restored.");
   });

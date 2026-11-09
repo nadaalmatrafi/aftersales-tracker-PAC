@@ -21,7 +21,7 @@ import { listActions, loadActionAccess } from "@/lib/queries";
 import { todayISO } from "@/lib/dates";
 import { audit, diff } from "@/lib/audit";
 import { notify, escalationRecipients } from "@/lib/notify";
-import { CATEGORIES, MAX_ATTACHMENT_BYTES, PRIORITIES, STEP_STATUSES, type StepStatus } from "@/lib/constants";
+import { CATEGORIES, MAX_ATTACHMENT_BYTES, PRIORITIES, REQUEST_TYPES, SETTABLE_STATUSES, STEP_STATUSES, type SettableStatus, type StepStatus } from "@/lib/constants";
 import { all, fail, int, isoDate, money, ok, str, uuid, type FormState } from "@/lib/form-state";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -82,6 +82,7 @@ async function validUser(id: string | null) {
 function parseCore(fd: FormData) {
   const priority = str(fd, "priority") ?? "medium";
   const category = str(fd, "category");
+  const requestType = str(fd, "requestType");
   const progressRaw = fd.get("progress");
   return {
     pointTask: str(fd, "pointTask", 2000),
@@ -90,6 +91,8 @@ function parseCore(fd: FormData) {
     targetDate: isoDate(fd, "targetDate"),
     priority: (PRIORITIES as readonly string[]).includes(priority) ? (priority as (typeof PRIORITIES)[number]) : "medium",
     category: category && (CATEGORIES as readonly string[]).includes(category) ? (category as (typeof CATEGORIES)[number]) : null,
+    requestType: requestType && (REQUEST_TYPES as readonly string[]).includes(requestType) ? requestType : null,
+    waitingFor: str(fd, "waitingFor", 300),
     businessImpact: str(fd, "businessImpact", 2000),
     timelineNote: str(fd, "timelineNote", 200),
     isConfidential: fd.get("isConfidential") === "on",
@@ -128,6 +131,7 @@ export async function createAction(_: FormState, fd: FormData): Promise<FormStat
         targetDate: c.targetDate,
         priority: c.priority,
         category: c.category,
+        requestType: c.requestType,
         businessImpact: c.businessImpact,
         timelineNote: c.timelineNote,
         isConfidential: c.isConfidential,
@@ -168,15 +172,18 @@ export async function editAction(_: FormState, fd: FormData): Promise<FormState>
     if (c.startDate && c.targetDate && c.targetDate < c.startDate) return fail("Target date cannot be before the start date.");
     const [before] = await db.select().from(schema.actionPlans).where(eq(schema.actionPlans.id, id));
     const st = str(fd, "status");
+    if (st === "waiting" && !c.waitingFor) return fail("Status “Waiting”: write who or what the action is waiting for.");
     const statusPatch =
-      st && ["not_started", "in_progress", "on_hold", "completed", "cancelled"].includes(st) && st !== before.status
+      st && (SETTABLE_STATUSES as readonly string[]).includes(st) && st !== before.status
         ? {
-            status: st as "not_started" | "in_progress" | "on_hold" | "completed" | "cancelled",
+            status: st as SettableStatus,
             completedAt: st === "completed" ? new Date() : null,
             cancelledAt: st === "cancelled" ? new Date() : null,
+            waitingSince: st === "waiting" ? new Date() : null,
             ...(st === "completed" ? { progress: 100 } : {}),
           }
         : {};
+    const effective = ("status" in statusPatch ? statusPatch.status : before.status) as string;
     const patch = {
       ...statusPatch,
       pointTask: c.pointTask,
@@ -185,6 +192,8 @@ export async function editAction(_: FormState, fd: FormData): Promise<FormState>
       targetDate: c.targetDate,
       priority: c.priority,
       category: c.category,
+      requestType: c.requestType,
+      waitingFor: effective === "waiting" ? c.waitingFor : null,
       businessImpact: c.businessImpact,
       timelineNote: c.timelineNote,
       isConfidential: c.isConfidential,
@@ -465,7 +474,7 @@ export async function uploadAttachment(_: FormState, fd: FormData): Promise<Form
     const { u, id } = await guard(fd, canUpdateAction, "You cannot upload files to this action.");
     const file = fd.get("file");
     if (!(file instanceof File) || file.size === 0) return fail("Choose a file to upload.");
-    if (file.size > MAX_ATTACHMENT_BYTES) return fail("Files must be 10 MB or smaller.");
+    if (file.size > MAX_ATTACHMENT_BYTES) return fail(`“${file.name}” is ${(file.size / 1048576).toFixed(1)} MB. The limit is 4 MB — compress it or split it.`);
     const mime = file.type || "application/octet-stream";
     if (!ALLOWED_MIME.test(mime)) return fail("Unsupported file type. Use PDF, Office documents, images, CSV or text.");
     const buf = Buffer.from(await file.arrayBuffer());
@@ -615,24 +624,29 @@ export async function requestUpdate(_: FormState, fd: FormData): Promise<FormSta
   try {
     const { u, id } = await guard(fd, canRequestUpdate, "Only management above this action can request an update.");
     const [row] = await listActions(u, { ids: [id] });
-    if (!row || row.waiting_reason === "closed" || !row.waiting_on_id) return fail("This action is closed; there is nobody to ask.");
-    if (row.waiting_on_id === u.id) return fail("This action is currently with you.");
+    if (!row || row.waiting_reason === "closed") return fail("This action is closed; there is nobody to ask.");
+    // While waiting on an outside party, the accountable owner is the one following it up.
+    const external = row.waiting_reason === "external";
+    const holderId = external ? row.owner_id : row.waiting_on_id;
+    const holderName = external ? row.owner_name : row.waiting_on_name;
+    if (!holderId) return fail("Nobody is assigned to the current update yet — assign someone first.");
+    if (holderId === u.id) return fail("This action is currently with you.");
     const message = str(fd, "message", 1000);
     await db.transaction(async (tx) => {
-      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, note: `Update requested from ${row.waiting_on_name}${message ? `: ${message}` : ""}` });
-      await audit(u.id, "action", id, "update_request", { holder: row.waiting_on_id, actingFor: row.acting_for, message }, tx);
+      await tx.insert(schema.actionUpdates).values({ actionId: id, userId: u.id, note: `Update requested from ${holderName}${message ? `: ${message}` : ""}` });
+      await audit(u.id, "action", id, "update_request", { holder: holderId, actingFor: row.acting_for, message }, tx);
     });
     await notify({
-      userIds: [row.waiting_on_id],
+      userIds: [holderId],
       type: "update_request",
       title: `Update requested: ${row.code}`,
-      body: `${u.name} asks for an update on:\n${row.point_task}${row.waiting_on_step ? `\n\nYour step: ${row.waiting_on_step}` : ""}${message ? `\n\nMessage: ${message}` : ""}`,
+      body: `${u.name} asks for an update on:\n${row.point_task}${external ? `\n\nWaiting for: ${row.waiting_for ?? "outside party"}` : row.waiting_on_step ? `\n\nYour step: ${row.waiting_on_step}` : ""}${message ? `\n\nMessage: ${message}` : ""}`,
       link: `/actions/${id}`,
       // At most one request per requester, holder and action per day.
-      dedupeKey: `update-request:${id}:${row.waiting_on_id}:${u.id}:${todayISO()}`,
+      dedupeKey: `update-request:${id}:${holderId}:${u.id}:${todayISO()}`,
     });
     done(id);
-    return ok(`Update requested from ${row.waiting_on_name}.`);
+    return ok(`Update requested from ${holderName}.`);
   } catch (e) {
     return handle(e);
   }

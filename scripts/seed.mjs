@@ -19,7 +19,10 @@ const ORGS = [
   ["PAC", "Petromin Auto Care"],
   ["PCVC", "Petromin Commercial Vehicle Care"],
   ["DEX", "DEX"],
+  ["CORP", "Corporate / Shared Services"],
 ];
+// The 14 initial action plans are optional: a fresh system starts empty unless SEED_INITIAL_ACTIONS=1.
+const SEED_ACTIONS = process.env.SEED_INITIAL_ACTIONS === "1";
 
 // [point/task, suggested responsible, original timeline, organizations, objective area]
 const INITIAL_ACTIONS = [
@@ -67,30 +70,33 @@ try {
     if (r.rowCount) log.push(`system owner ${process.env.BOOTSTRAP_OWNER_EMAIL} created (must change password at first login)`);
   }
 
-  // Abdullah Qadi — receives the initial action plans for distribution.
+  // Abdullah Qadi — sees everything; receives the initial action plans when they are seeded.
+  // Created only when ABDULLAH_QADI_EMAIL is given (otherwise the System Owner adds accounts by hand).
   let abdullah = (
     await c.query("SELECT id FROM users WHERE lower(name) = 'abdullah qadi' OR lower(email) = lower($1) LIMIT 1", [
       process.env.ABDULLAH_QADI_EMAIL || "",
     ])
   ).rows[0];
-  if (!abdullah) {
-    if (!process.env.ABDULLAH_QADI_EMAIL) throw new Error("ABDULLAH_QADI_EMAIL is required to create the Abdullah Qadi account");
+  if (!abdullah && process.env.ABDULLAH_QADI_EMAIL) {
     abdullah = (
       await c.query("INSERT INTO users (name, email, role) VALUES ('Abdullah Qadi', lower($1), 'director') RETURNING id", [
         process.env.ABDULLAH_QADI_EMAIL,
       ])
     ).rows[0];
-    log.push("user Abdullah Qadi created (no password yet — set one from Administration › Users)");
+    log.push("user Abdullah Qadi created (no password yet — set one from Administration › People & access)");
   }
-  for (const p of ABDULLAH_PERMISSIONS) {
-    await c.query("INSERT INTO user_permissions (user_id, permission) VALUES ($1,$2) ON CONFLICT DO NOTHING", [abdullah.id, p]);
+  if (abdullah) {
+    for (const p of ABDULLAH_PERMISSIONS) {
+      await c.query("INSERT INTO user_permissions (user_id, permission) VALUES ($1,$2) ON CONFLICT DO NOTHING", [abdullah.id, p]);
+    }
+    for (const id of Object.values(orgIds)) {
+      await c.query("INSERT INTO user_organizations (user_id, organization_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [abdullah.id, id]);
+    }
   }
-  for (const id of Object.values(orgIds)) {
-    await c.query("INSERT INTO user_organizations (user_id, organization_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [abdullah.id, id]);
-  }
+  if (SEED_ACTIONS && !abdullah) throw new Error("SEED_INITIAL_ACTIONS=1 needs ABDULLAH_QADI_EMAIL (the initial actions are assigned to him)");
 
   let created = 0;
-  for (const [text, suggested, timeline, orgs, category] of INITIAL_ACTIONS) {
+  for (const [text, suggested, timeline, orgs, category] of SEED_ACTIONS ? INITIAL_ACTIONS : []) {
     const exists = await c.query("SELECT 1 FROM action_plans WHERE lower(trim(point_task)) = lower(trim($1)) LIMIT 1", [text]);
     if (exists.rowCount) continue;
     const id = (await c.query("SELECT nextval(pg_get_serial_sequence('action_plans','id')) AS id")).rows[0].id;
@@ -113,7 +119,7 @@ try {
     ]);
     created++;
   }
-  log.push(`${created} initial action plan(s) created, ${INITIAL_ACTIONS.length - created} already present`);
+  log.push(SEED_ACTIONS ? `${created} initial action plan(s) created, ${INITIAL_ACTIONS.length - created} already present` : "no action plans seeded (system starts empty)");
   await c.query("COMMIT");
 } catch (e) {
   await c.query("ROLLBACK");

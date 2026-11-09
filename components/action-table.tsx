@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { AlertTriangle, Flame } from "lucide-react";
+import { AlertTriangle, Flame, Hourglass } from "lucide-react";
 import type { ActionRow } from "@/lib/queries";
 import { fmtDate, fmtRelative } from "@/lib/dates";
-import type { Priority } from "@/lib/constants";
+import { REQUEST_TYPE_LABEL, type Priority, type RequestType } from "@/lib/constants";
 import { EmptyState, OrgTags, PriorityBadge, Progress, StatusBadge } from "./ui";
 
 export function WaitingOn({ a }: { a: ActionRow }) {
@@ -10,12 +10,13 @@ export function WaitingOn({ a }: { a: ActionRow }) {
   return (
     <div className="min-w-40">
       <div className="flex items-center gap-1.5 font-medium text-fg">
+        {a.waiting_reason === "external" && <Hourglass size={13} className="text-warn" aria-label="Waiting on outside party" />}
         {a.step_blocked && <AlertTriangle size={13} className="text-accent" aria-label="Blocked" />}
         {a.waiting_on_name}
       </div>
       {a.acting_for && <div className="text-[11px] font-medium text-orange">covering for {a.acting_for}</div>}
       <div className="text-xs text-muted">
-        {a.waiting_reason === "approval" ? "Approval decision" : a.waiting_on_step ?? "Owner"}
+        {a.waiting_reason === "external" ? <span className="text-warn">{a.waiting_on_step}</span> : a.waiting_on_step ?? "Owner"}
         {a.waiting_on_dept ? ` · ${a.waiting_on_dept}` : ""}
       </div>
       {a.waiting_since && <div className="text-[11px] text-muted">since {fmtRelative(a.waiting_since)}</div>}
@@ -48,6 +49,7 @@ export function ActionTable({ rows, compact, emptyText = "No action plans match 
                 <div className="mb-1 flex flex-wrap items-center gap-1.5">
                   <span className="text-[11px] font-semibold tabular-nums text-muted">{a.code}</span>
                   <OrgTags codes={a.org_codes} />
+                  {a.request_type && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-2">{REQUEST_TYPE_LABEL[a.request_type as RequestType] ?? a.request_type}</span>}
                   {a.priority !== "medium" && <PriorityBadge priority={a.priority as Priority} />}
                   {a.is_escalated && (
                     <span className="inline-flex items-center gap-0.5 text-[11px] text-accent">

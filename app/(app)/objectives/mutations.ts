@@ -86,7 +86,7 @@ export async function completeItem(_: FormState, fd: FormData): Promise<FormStat
   const file = fd.get("file");
   const hasFile = file instanceof File && file.size > 0;
   if (!evidence && !hasFile) return fail("Provide supporting evidence (note or file).");
-  if (hasFile && (file as File).size > MAX_ATTACHMENT_BYTES) return fail("Files must be 10 MB or smaller.");
+  if (hasFile && (file as File).size > MAX_ATTACHMENT_BYTES) return fail(`“${(file as File).name}” is ${((file as File).size / 1048576).toFixed(1)} MB. The limit is 4 MB — compress it or split it.`);
   await db.transaction(async (tx) => {
     if (hasFile) {
       const f = file as File;

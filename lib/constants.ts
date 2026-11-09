@@ -23,13 +23,14 @@ export const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 export const PRIORITY_LABEL: Record<Priority, string> = { low: "Low", medium: "Medium", high: "High", critical: "Critical" };
 
-export const STORED_STATUSES = ["not_started", "in_progress", "pending_approval", "on_hold", "completed", "cancelled"] as const;
+export const STORED_STATUSES = ["not_started", "in_progress", "waiting", "pending_approval", "on_hold", "completed", "cancelled"] as const;
 export type StoredStatus = (typeof STORED_STATUSES)[number];
 export const STATUSES = [...STORED_STATUSES, "overdue"] as const;
 export type Status = (typeof STATUSES)[number];
 export const STATUS_LABEL: Record<Status, string> = {
   not_started: "Not Started",
   in_progress: "In Progress",
+  waiting: "Waiting",
   pending_approval: "Pending Approval",
   on_hold: "On Hold",
   completed: "Completed",
@@ -37,8 +38,11 @@ export const STATUS_LABEL: Record<Status, string> = {
   cancelled: "Cancelled",
 };
 export const CLOSED_STATUSES: StoredStatus[] = ["completed", "cancelled"];
+/** Statuses management can set directly. "waiting" = held up by something outside this system (another party, a decision taken elsewhere). */
+export const SETTABLE_STATUSES = ["not_started", "in_progress", "waiting", "on_hold", "completed", "cancelled"] as const;
+export type SettableStatus = (typeof SETTABLE_STATUSES)[number];
 /** Statuses offered in filters and forms. There is no approval step in this system (approvals happen outside it). */
-export const FILTER_STATUSES = ["not_started", "in_progress", "on_hold", "overdue", "completed", "cancelled"] as const;
+export const FILTER_STATUSES = ["not_started", "in_progress", "waiting", "on_hold", "overdue", "completed", "cancelled"] as const;
 
 export const STEP_STATUSES = ["pending", "in_progress", "blocked", "done", "skipped"] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
@@ -66,6 +70,18 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   employee_performance: "Employee Performance",
 };
 
+/** What kind of instruction the request is. */
+export const REQUEST_TYPES = ["report", "sales_increase", "expense_reduction", "business_review", "cost_improvement", "other"] as const;
+export type RequestType = (typeof REQUEST_TYPES)[number];
+export const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
+  report: "Report",
+  sales_increase: "Sales increase",
+  expense_reduction: "Expense reduction",
+  business_review: "Business review",
+  cost_improvement: "Cost improvement",
+  other: "Other",
+};
+
 export const NOTIFICATION_TYPES = {
   assignment: "New task assignment",
   reassignment: "Task reassignment",
@@ -79,7 +95,8 @@ export const NOTIFICATION_TYPES = {
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
 
 export const TIME_ZONE = "Asia/Riyadh";
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Hosting limits a request to ~4.5 MB, so uploads are capped at 4 MB. */
+export const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 export const STALE_UPDATE_DAYS = 7;
 /** Default days without an update before the holder's manager is alerted (editable in System Settings). */
 export const DEFAULT_STALE_ALERT_DAYS = 3;

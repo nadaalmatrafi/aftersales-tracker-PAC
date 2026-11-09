@@ -27,6 +27,7 @@ export function Badge({ tone = "neutral", children, title }: { tone?: Tone; chil
 const STATUS_TONE: Record<Status, Tone> = {
   not_started: "neutral",
   in_progress: "info",
+  waiting: "warn",
   pending_approval: "warn",
   on_hold: "neutral",
   completed: "ok",

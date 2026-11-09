@@ -1,17 +1,21 @@
 import Link from "next/link";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
 import { FileDown } from "lucide-react";
 import { requireUser, canExport, seesAllActions } from "@/lib/auth";
 import { listActions, lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { holders, impactSummary, kpis, monthlyTrend, objectiveProgress, overdueAging, statusBreakdown } from "@/lib/dashboard";
 import { fmtRelative, todayISO, fmtDate } from "@/lib/dates";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
+import { ActiveFilters, FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
 import { ObjectivesCard, ObjectivesPanel } from "@/components/objectives-panel";
 import { KpiCard, PageHeader, Section, EmptyState } from "@/components/ui";
 import { SingleBars, StatusStack, TrendChart } from "@/components/charts";
 
 export const metadata = { title: "Overview" };
 
+/** Drops the objectives-panel key so filter chips only reflect filters. */
+const toSp = (sp: Record<string, string | string[] | undefined>) => Object.fromEntries(Object.entries(sp).filter(([k]) => k !== "obj"));
 const sar = (n: number) => (n ? `SAR ${Math.round(n).toLocaleString("en-US")}` : "—");
 
 export default async function Overview({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -37,6 +41,15 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   const byDirector = statusBreakdown(rows, (a) => a.director_name, "No director assigned");
   const byDept = statusBreakdown(rows, (a) => a.department, "Department not assigned");
   const aging = overdueAging(rows);
+  const latestIds = rows.map((r) => r.id);
+  const latest = latestIds.length
+    ? ((
+        await db.execute(sql`SELECT up.id, up.note, up.created_at, us.name AS by_name, a.id AS action_id, a.code
+                               FROM action_updates up JOIN action_plans a ON a.id = up.action_id JOIN users us ON us.id = up.user_id
+                              WHERE a.id IN (${sql.join(latestIds.map((i) => sql`${i}`), sql`, `)})
+                              ORDER BY up.created_at DESC LIMIT 10`)
+      ).rows as { id: number; note: string; created_at: string; by_name: string; action_id: number; code: string }[])
+    : [];
 
   return (
     <>
@@ -51,6 +64,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
         }
       />
       <FilterBar f={f} lk={lk} people={peopleOpts} peopleLabel={peopleLabelFor(u.role, u.role === "system_owner" || (seesAllActions(u) && u.role !== "ceo"))} action="/overview" />
+      <ActiveFilters sp={toSp(sp)} f={f} lk={lk} people={peopleOpts} action="/overview" count={rows.length} />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard label="Total action plans" value={k.total} href={qs({})} />
@@ -80,6 +94,22 @@ export default async function Overview({ searchParams }: { searchParams: Promise
           </div>
         </Section>
       </div>
+      <Section title="Latest updates & directions" className="mt-5" actions={<Link className="text-xs text-muted hover:text-fg" href="/weekly">Weekly review →</Link>}>
+        {latest.length === 0 ? (
+          <EmptyState title="No updates yet." />
+        ) : (
+          <ol className="divide-y divide-line">
+            {latest.map((x) => (
+              <li key={x.id} className="flex flex-wrap items-baseline gap-x-2 py-2 text-sm">
+                <Link href={`/actions/${x.action_id}`} className="link text-xs font-semibold">{x.code}</Link>
+                <span className="min-w-0 flex-1 text-fg">{x.note}</span>
+                <span className="text-xs text-muted">{x.by_name} · {fmtRelative(x.created_at)}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Section>
+
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         <Section title="Who is holding open work — current bottlenecks">
           {people.length === 0 ? (

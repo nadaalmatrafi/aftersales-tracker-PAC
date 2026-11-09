@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { requireUser, canCreateActions, canExport, seesAllActions } from "@/lib/auth";
 import { listActions, lookups, parseFilters, peopleOptions } from "@/lib/queries";
 import { ActionTable } from "@/components/action-table";
-import { FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
+import { ActiveFilters, FilterBar, peopleLabelFor, toQuery } from "@/components/filter-bar";
 import { PageHeader } from "@/components/ui";
 
 export const metadata = { title: "Action Plans" };
@@ -36,8 +36,9 @@ export default async function ActionsPage({ searchParams }: { searchParams: Prom
       />
       {sp.deleted && <p role="status" className="mb-4 text-sm text-ok">Action plan deleted. It remains recoverable by the System Owner.</p>}
       <FilterBar variant="actions" f={f} lk={lk} people={people} peopleLabel={peopleLabelFor(u.role, u.role === "system_owner" || (seesAllActions(u) && u.role !== "ceo"))} action="/actions" />
+      <ActiveFilters sp={sp} f={f} lk={lk} people={people} action="/actions" count={rows.length} />
       <div className="card">
-        <ActionTable rows={rows} />
+        <ActionTable rows={rows} emptyText={toQuery(sp, {}, ["deleted"]) ? "No action plans match these filters — remove a filter above or Clear all." : "No action plans yet. Create the first one with New action."} />
       </div>
     </>
   );

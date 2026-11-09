@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   serverExternalPackages: ["pg", "exceljs", "jspdf", "jspdf-autotable"],
   poweredByHeader: false,
-  experimental: { serverActions: { bodySizeLimit: "11mb" } },
+  experimental: { serverActions: { bodySizeLimit: "5mb" } },
   async headers() {
     return [
       {

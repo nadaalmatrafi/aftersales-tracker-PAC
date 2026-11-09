@@ -5,7 +5,7 @@ import { seesAllActions, type CurrentUser } from "./auth";
 import { actionVisibility, type ActionAccessRow } from "./access";
 import { todayISO } from "./dates";
 import { activeDelegations } from "./leave";
-import { STATUSES, PRIORITIES, type Status } from "./constants";
+import { STATUSES, PRIORITIES, REQUEST_TYPES, type Status } from "./constants";
 
 export type ActionFilters = {
   org?: number;
@@ -21,6 +21,8 @@ export type ActionFilters = {
   to?: string;
   q?: string;
   category?: string;
+  /** Request type (report, sales increase, …). */
+  type?: string;
   escalated?: boolean;
   stale?: boolean;
   dueSoon?: boolean;
@@ -51,6 +53,7 @@ export function parseFilters(sp: Record<string, string | string[] | undefined>):
     to: ISO.test(g("to") ?? "") ? g("to") : undefined,
     q: g("q")?.slice(0, 100),
     category: g("category"),
+    type: (REQUEST_TYPES as readonly string[]).includes(g("type") ?? "") ? g("type") : undefined,
     escalated: g("escalated") === "1",
     stale: g("stale") === "1",
     dueSoon: g("dueSoon") === "1",
@@ -80,6 +83,7 @@ export function filterSql(f: ActionFilters, today: string): SQL {
       OR EXISTS (SELECT 1 FROM users pu JOIN user_organizations uo ON uo.user_id = pu.id
                  JOIN action_organizations ao ON ao.organization_id = uo.organization_id
                  WHERE pu.id = ${f.person} AND pu.role = 'company_manager' AND ao.action_id = a.id))`);
+  if (f.type) parts.push(sql`a.request_type = ${f.type}`);
   if (f.category) parts.push(sql`a.category::text = ${f.category}`);
   if (f.from) parts.push(sql`(a.created_at::date >= ${f.from}::date OR a.target_date >= ${f.from}::date)`);
   if (f.to) parts.push(sql`(a.created_at::date <= ${f.to}::date OR a.target_date <= ${f.to}::date)`);
@@ -114,6 +118,9 @@ export type ActionRow = {
   progress: number;
   category: string | null;
   business_impact: string | null;
+  request_type: string | null;
+  /** Set while status = waiting: the outside party / decision the action is waiting for. */
+  waiting_for: string | null;
   blocker: string | null;
   is_escalated: boolean;
   last_update_at: string | null;
@@ -126,7 +133,7 @@ export type ActionRow = {
   waiting_on_name: string | null;
   waiting_on_dept: string | null;
   waiting_on_step: string | null;
-  waiting_reason: "approval" | "step" | "owner" | "closed";
+  waiting_reason: "approval" | "external" | "step" | "owner" | "closed";
   /** Set when the holder is on leave: the name of the person the delegate is covering for. */
   acting_for: string | null;
   waiting_since: string | null;
@@ -139,12 +146,12 @@ export async function listActions(u: CurrentUser, f: ActionFilters = {}, opts: {
   const today = todayISO();
   const order =
     opts.orderBy ??
-    sql`CASE ${effectiveStatusSql(today)} WHEN 'overdue' THEN 0 WHEN 'pending_approval' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'not_started' THEN 3 WHEN 'on_hold' THEN 4 ELSE 5 END,
+    sql`CASE ${effectiveStatusSql(today)} WHEN 'overdue' THEN 0 WHEN 'pending_approval' THEN 1 WHEN 'waiting' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'not_started' THEN 3 WHEN 'on_hold' THEN 4 ELSE 5 END,
         CASE a.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, a.target_date NULLS LAST, a.id`;
   const res = await db.execute(sql`
     SELECT a.id, a.code, a.point_task, a.department_id, a.owner_id, a.suggested_responsible, a.timeline_note,
            a.start_date::text, a.target_date::text, a.priority::text, a.status::text, a.progress, a.category::text,
-           a.business_impact, a.blocker, a.is_escalated, a.last_update_at, a.last_update_note, a.completed_at, a.created_at,
+           a.business_impact, a.blocker, a.is_escalated, a.request_type, a.waiting_for, a.waiting_since, a.last_update_at, a.last_update_note, a.completed_at, a.created_at,
            ${effectiveStatusSql(today)} AS effective_status,
            d.name AS department, dir.name AS director_name, o.name AS owner_name, ab.name AS assigned_by_name,
            COALESCE((SELECT array_agg(org.code ORDER BY org.id) FROM action_organizations ao JOIN organizations org ON org.id = ao.organization_id WHERE ao.action_id = a.id), '{}') AS org_codes,
@@ -203,6 +210,16 @@ function toActionRow(r: Record<string, unknown>): ActionRow {
       waiting_since: (r.pa_requested_at as string) ?? null,
       step_blocked: false,
     };
+  } else if (status === "waiting") {
+    waiting = {
+      waiting_on_id: null,
+      waiting_on_name: (r.waiting_for as string) || "Outside party",
+      waiting_on_dept: null,
+      waiting_on_step: `Waiting — followed up by ${r.owner_name as string}`,
+      waiting_reason: "external",
+      waiting_since: (r.waiting_since as string) ?? (r.last_update_at as string) ?? null,
+      step_blocked: false,
+    };
   } else if (r.ns_title) {
     waiting = {
       waiting_on_id: (r.ns_assignee_id as string) ?? null,
@@ -245,6 +262,8 @@ function toActionRow(r: Record<string, unknown>): ActionRow {
     progress: r.progress as number,
     category: (r.category as string) ?? null,
     business_impact: (r.business_impact as string) ?? null,
+    request_type: (r.request_type as string) ?? null,
+    waiting_for: (r.waiting_for as string) ?? null,
     blocker: (r.blocker as string) ?? null,
     is_escalated: !!r.is_escalated,
     last_update_at: (r.last_update_at as string) ?? null,

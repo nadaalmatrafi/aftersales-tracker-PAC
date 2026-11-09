@@ -6,7 +6,7 @@ import { actionVisibility } from "./access";
 import { listActions, type ActionFilters, type ActionRow } from "./queries";
 import { statusBreakdown } from "./dashboard";
 import { objectiveVisibility } from "./objectives";
-import { CATEGORY_LABEL, PRIORITY_LABEL, ROLE_LABEL, STATUS_LABEL, type Category, type Priority, type Role } from "./constants";
+import { CATEGORY_LABEL, PRIORITY_LABEL, REQUEST_TYPE_LABEL, ROLE_LABEL, STATUS_LABEL, type Category, type Priority, type RequestType, type Role } from "./constants";
 import { fmtDate, fmtDateTime } from "./dates";
 
 export const REPORTS = {
@@ -31,6 +31,7 @@ const ACTION_COLS: Column[] = [
   { key: "department", label: "Department", width: 18 },
   { key: "responsible", label: "Responsible", width: 18 },
   { key: "task", label: "Point / Task", width: 50 },
+  { key: "type", label: "Request type", width: 16 },
   { key: "status", label: "Status", width: 14 },
   { key: "deadline", label: "Deadline", width: 14 },
   { key: "progress", label: "Progress %", width: 10 },
@@ -46,7 +47,8 @@ function actionRow(a: ActionRow) {
     department: a.department ?? "Not assigned",
     responsible: a.owner_name,
     task: a.point_task,
-    status: STATUS_LABEL[a.effective_status],
+    type: a.request_type ? (REQUEST_TYPE_LABEL[a.request_type as RequestType] ?? a.request_type) : "",
+    status: a.status === "waiting" && a.waiting_for ? `Waiting — ${a.waiting_for}` : STATUS_LABEL[a.effective_status],
     deadline: a.target_date ? fmtDate(a.target_date) : (a.timeline_note ?? "Not set"),
     progress: a.progress,
     with: a.waiting_reason === "closed" ? "—" : `${a.waiting_on_name ?? ""}${a.waiting_on_step ? ` (${a.waiting_on_step})` : ""}`,

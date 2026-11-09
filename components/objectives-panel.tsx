@@ -11,6 +11,7 @@ import { fmtDate, todayISO } from "@/lib/dates";
 import { ActionForm, SubmitButton } from "./forms";
 import { Badge, Field, Progress, cx } from "./ui";
 import { addItem, archiveObjective, completeItem, createObjective } from "@/app/(app)/objectives/mutations";
+import { FileInput } from "./file-input";
 
 type Row = Record<string, unknown>;
 
@@ -108,7 +109,7 @@ export async function ObjectivesPanel({ u, horizon, lk, closeHref, tabHref }: { 
                         <ActionForm action={completeItem} className="mt-2 flex flex-wrap items-end gap-2 pl-6">
                           <input type="hidden" name="itemId" value={String(it.id)} />
                           <input className="input h-8 w-60 text-xs" name="evidenceNote" placeholder="Evidence (note, reference, figure)" maxLength={2000} aria-label="Evidence" />
-                          <input type="file" name="file" className="text-xs text-fg-2 file:mr-2 file:rounded file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:text-fg" aria-label="Evidence file" />
+                          <FileInput label="Evidence file" required={false} className="max-w-72" />
                           <SubmitButton className="btn btn-secondary btn-sm">Mark complete</SubmitButton>
                         </ActionForm>
                       )}

@@ -7,7 +7,7 @@ import { ActionForm, SubmitButton } from "@/components/forms";
 import { EmptyState, Field, PageHeader, Section } from "@/components/ui";
 import { saveDepartment, saveOrganization } from "../mutations";
 
-export const metadata = { title: "Organizations" };
+export const metadata = { title: "Business units" };
 
 export default async function OrgAdmin() {
   const me = await requireUser();
@@ -18,7 +18,7 @@ export default async function OrgAdmin() {
   const directors = lk.users.filter((u) => ["director", "company_manager", "ceo", "system_owner", "manager"].includes(u.role));
   return (
     <>
-      <PageHeader title="Companies & Departments" subtitle="PAC, PCVC and DEX. The company manager is set on the user (role Company Manager, one company). Assign each department's director here." />
+      <PageHeader title="Business units & departments" subtitle="PAC, PCVC, DEX and Corporate / Shared Services. The company manager is set on the user (role Company Manager, one company). Assign each department's director here." />
       <div className="grid gap-5 lg:grid-cols-3">
         {lk.orgs.map((o) => {
           const depts = lk.departments.filter((d) => d.organization_id === o.id);
